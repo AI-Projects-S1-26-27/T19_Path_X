@@ -82,3 +82,31 @@ def test_router_negative_constraint_preserves_semantics():
     # For grid world, the negative constraint should target location, not holding
     assert res.negative_constraints[0].predicate == "at"
     assert "cell_c" in res.negative_constraints[0].arguments
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "The red box is on the green box. Put the red box on the table. Do not touch the glass or move the glass.",
+        "The red box is on the green box. Put the red box on the table. Do not touch or move the glass.",
+    ],
+)
+def test_router_extracts_glass_constraint_from_coordinated_verbs(prompt):
+    router = DomainRouter(registry=registry)
+    res = router.route(prompt, explicit_domain_id="blocks_world")
+
+    assert res.outcome == RoutingOutcome.SUPPORTED
+    assert any(f.predicate == "holding" and f.arguments == ("glass",) for f in res.negative_constraints)
+    assert all("or" not in f.arguments and "and" not in f.arguments for f in res.negative_constraints)
+    assert any(c.entity == "glass" for c in res.typed_constraints)
+
+
+def test_router_resolves_multiword_prohibited_block_name():
+    router = DomainRouter(registry=registry)
+    res = router.route(
+        "Put the blue box on the table. Do not move the red box.",
+        explicit_domain_id="blocks_world",
+    )
+
+    assert any(f.predicate == "holding" and f.arguments == ("red_box",) for f in res.negative_constraints)
+    assert any(c.entity == "red_box" for c in res.typed_constraints)

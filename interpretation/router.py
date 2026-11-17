@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import enum
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from pydantic import BaseModel, Field
 
+from core.actions.domain import Domain
 from core.contracts import FactSchema, TaskConstraintSchema, TaskConstraintType
 from core.domains import DomainRegistry, registry as default_registry
 
@@ -36,6 +37,197 @@ class DomainRoutingResult(BaseModel):
     clarification_question: Optional[str] = None
     explanation: str = ""
     raw_prompt: str = ""
+    system_prompt: Optional[str] = None
+
+
+def build_domain_system_prompt(
+    domain: Union[Domain, str],
+    registry: Optional[DomainRegistry] = None,
+) -> str:
+    """Builds an authoritative, domain-aware LLM formalization system prompt.
+
+    Dynamically derives valid entity types, predicate signatures, action schemas,
+    task examples, and formalization rules directly from the domain definition.
+    """
+    if isinstance(domain, str):
+        reg = registry or default_registry
+        resolved = reg.get(domain)
+        if not resolved:
+            from core.actions.domain import create_blocks_world_domain
+            resolved = create_blocks_world_domain()
+        domain = resolved
+
+    domain_id = getattr(domain, "domain_id", getattr(domain, "name", "blocks_world")).lower()
+    domain_name = getattr(domain, "name", domain_id)
+    domain_desc = getattr(domain, "description", "")
+
+    # Types
+    valid_types = (
+        sorted(t for t in domain.type_hierarchy.get_all_types() if t != "object")
+        if hasattr(domain, "type_hierarchy")
+        else ["block"]
+    )
+    if not valid_types:
+        valid_types = ["block"]
+
+    # Predicates
+    pred_lines = []
+    if hasattr(domain, "predicates"):
+        for p_name, p_def in sorted(domain.predicates.items()):
+            args_str = ", ".join(p_def.arg_types)
+            desc_str = f" - {p_def.description}" if getattr(p_def, "description", "") else ""
+            pred_lines.append(f"- {p_def.name}({args_str}){desc_str}")
+    predicates_text = "\n".join(pred_lines) if pred_lines else "- (No declared predicates)"
+
+    # Actions
+    action_lines = []
+    if hasattr(domain, "actions"):
+        for a_name, a_def in sorted(domain.actions.items()):
+            params_str = ", ".join(f"{p.name}: {getattr(p, 'type_name', getattr(p, 'param_type', 'object'))}" for p in a_def.parameters)
+            desc_str = f" - {a_def.description}" if getattr(a_def, "description", "") else ""
+            action_lines.append(f"- {a_def.name}({params_str}){desc_str}")
+    actions_text = "\n".join(action_lines) if action_lines else "- (No declared actions)"
+
+    # Domain-specific guidelines
+    if domain_id in ("blocks_world", "blocks", "tabletop"):
+        domain_guidelines = """CRITICAL FORMALIZATION RULES FOR BLOCKS WORLD:
+1. "entities": Keys MUST be unique snake_case names (e.g. "red_box", "blue_box", "glass") and values must be "block".
+2. "initial_facts":
+   - EVERY entity is initially resting on the table ("on_table") and "clear", UNLESS explicitly stated as stacked (e.g., "red is on green" -> on(red, green), clear(red), on_table(green)).
+   - Robot hand is initially empty: {"predicate": "handempty", "arguments": []}.
+   - NEVER put {"predicate": "holding", "arguments": ["X"]} in initial_facts unless the user prompt explicitly says the robot is currently holding X.
+3. "negative_constraints":
+   - For safety instructions like "do not touch/move/hold X", use {"predicate": "holding", "arguments": ["X"]}.
+   - For "do not stack X on Y", use {"predicate": "on", "arguments": ["X", "Y"]}.
+   - Do NOT put "clear" or "on_table" in negative_constraints.
+4. "goal_facts":
+   - Target configurations such as {"predicate": "on", "arguments": ["top_block", "bottom_block"]}.
+   - When prompt says "Pick up A and stack on B", the goal is ONLY {"predicate": "on", "arguments": ["A", "B"]}. Top block is A, bottom block is B. Do NOT include holding(A) in goal_facts.
+   - If the prompt specifies circular or simultaneous operations (e.g. "put A on B and B on A simultaneously"), you MUST include BOTH goals in "goal_facts": on(A, B) and on(B, A).
+5. Consistency: All predicate arguments must match the keys in "entities" exactly."""
+    elif domain_id in ("grid_world", "grid", "navigation"):
+        domain_guidelines = """CRITICAL FORMALIZATION RULES FOR GRID WORLD:
+1. "entities": Keys MUST be unique snake_case names and values MUST be one of: "agent", "location", "item".
+   - e.g. "agent": "agent", "cell_a": "location", "cell_b": "location", "package_1": "item".
+2. "initial_facts":
+   - Starting agent location: {"predicate": "at", "arguments": ["agent", "<start_location>"]}.
+   - Agent is free unless holding an item: {"predicate": "agent_free", "arguments": ["agent"]}.
+   - Location adjacency/connectivity: {"predicate": "connected", "arguments": ["<from_loc>", "<to_loc>"]}.
+   - Items resting at locations: {"predicate": "item_at", "arguments": ["<item>", "<location>"]}.
+3. "negative_constraints":
+   - Prohibited locations (e.g. "avoid cell_c", "do not enter loc_x") -> {"predicate": "at", "arguments": ["agent", "<cell_c>"]}.
+   - Prohibited item pickup -> {"predicate": "holding_item", "arguments": ["agent", "<item>"]}.
+4. "goal_facts":
+   - Agent destination: {"predicate": "at", "arguments": ["agent", "<destination_location>"]}.
+   - Package/item delivery: {"predicate": "item_at", "arguments": ["<item>", "<destination_location>"]} or {"predicate": "holding_item", "arguments": ["agent", "<item>"]}.
+5. Consistency: Only use declared predicates: at, item_at, connected, blocked, holding_item, agent_free."""
+    elif domain_id in ("household", "household_robotics", "domestic"):
+        domain_guidelines = """CRITICAL FORMALIZATION RULES FOR HOUSEHOLD ROBOTICS:
+1. "entities": Keys MUST be unique snake_case names and values MUST be one of: "robot", "room", "surface", "container", "item".
+   - e.g. "robot": "robot", "kitchen": "room", "living_room": "room", "table": "surface", "shelf": "surface", "cabinet": "container", "mug": "item".
+2. "initial_facts":
+   - Robot starting room: {"predicate": "robot_at", "arguments": ["robot", "<start_room>"]}.
+   - Gripper empty: {"predicate": "gripper_empty", "arguments": ["robot"]}.
+   - Item placement: {"predicate": "item_on", "arguments": ["<item>", "<surface>"]} or {"predicate": "item_in", "arguments": ["<item>", "<container>"]}.
+   - Room topology: {"predicate": "connected_rooms", "arguments": ["<room_1>", "<room_2>"]}.
+   - Surfaces/containers in rooms: {"predicate": "surface_in_room", "arguments": ["<surface>", "<room>"]}, {"predicate": "container_in_room", "arguments": ["<container>", "<room>"]}.
+3. "negative_constraints":
+   - Prohibited rooms (e.g. "do not enter bedroom") -> {"predicate": "robot_at", "arguments": ["robot", "<bedroom>"]}.
+   - Fragile or prohibited items (e.g. "do not touch/move the vase") -> {"predicate": "holding", "arguments": ["robot", "<vase>"]}.
+4. "goal_facts":
+   - Target placement: {"predicate": "item_on", "arguments": ["<item>", "<target_surface>"]} or {"predicate": "item_in", "arguments": ["<item>", "<target_container>"]}.
+5. Consistency: Only use declared predicates: robot_at, connected_rooms, surface_in_room, container_in_room, item_on, item_in, container_open, container_closed, holding, gripper_empty."""
+    elif domain_id in ("warehouse", "logistics", "inventory"):
+        domain_guidelines = """CRITICAL FORMALIZATION RULES FOR WAREHOUSE:
+1. "entities": Keys MUST be unique snake_case names and values MUST be one of: "carrier", "zone", "sku", "bay".
+   - e.g. "carrier_1": "carrier", "zone_storage": "zone", "zone_dock": "zone", "sku_a": "sku", "shelf_1": "bay", "dispatch_dock": "bay".
+2. "initial_facts":
+   - Carrier position: {"predicate": "carrier_at", "arguments": ["<carrier>", "<zone>"]}.
+   - Carrier empty: {"predicate": "carrier_empty", "arguments": ["<carrier>"]}.
+   - Storage locations: {"predicate": "sku_stored_in", "arguments": ["<sku>", "<bay>"]}.
+   - Bays in zones: {"predicate": "bay_in_zone", "arguments": ["<bay>", "<zone>"]}.
+   - Zone connectivity: {"predicate": "zone_connected", "arguments": ["<zone_1>", "<zone_2>"]}.
+   - Bay availability: {"predicate": "bay_available", "arguments": ["<bay>"]}.
+3. "negative_constraints":
+   - Restricted zones (e.g. "avoid restricted zone aisle_3") -> {"predicate": "carrier_at", "arguments": ["<carrier>", "<zone>"]}.
+   - Prohibited SKU movement -> {"predicate": "carrier_loaded_with", "arguments": ["<carrier>", "<sku>"]}.
+4. "goal_facts":
+   - Target SKU storage: {"predicate": "sku_stored_in", "arguments": ["<sku>", "<target_bay>"]}.
+5. Consistency: Only use declared predicates: carrier_at, zone_connected, bay_in_zone, sku_stored_in, carrier_loaded_with, carrier_empty, bay_occupied, bay_available, restricted_zone."""
+    elif domain_id in ("scheduling", "job_shop", "resource_allocation"):
+        domain_guidelines = """CRITICAL FORMALIZATION RULES FOR SCHEDULING:
+1. "entities": Keys MUST be unique snake_case names and values MUST be one of: "job", "resource", "slot".
+   - e.g. "design_review": "job", "code_review": "job", "machine_1": "resource", "slot_1": "slot", "slot_2": "slot".
+2. "initial_facts":
+   - Ready jobs: {"predicate": "job_ready", "arguments": ["<job>"]}.
+   - Available resources in slots: {"predicate": "resource_available", "arguments": ["<resource>", "<slot>"]}.
+   - Precedence: {"predicate": "precedes", "arguments": ["<prereq_job>", "<dependent_job>"]}.
+3. "negative_constraints":
+   - Forbidden assignments -> {"predicate": "job_assigned", "arguments": ["<job>", "<resource>", "<slot>"]}.
+4. "goal_facts":
+   - Job completion: {"predicate": "job_completed", "arguments": ["<job>"]}.
+5. Consistency: Only use declared predicates: job_ready, job_completed, resource_available, resource_busy, job_assigned, precedes."""
+    elif domain_id in ("software_workflow", "software", "cicd", "devops"):
+        domain_guidelines = """CRITICAL FORMALIZATION RULES FOR SOFTWARE WORKFLOW:
+1. "entities": Keys MUST be unique snake_case names and values MUST be one of: "commit", "artifact", "environment".
+   - e.g. "commit_v1": "commit", "pkg_v1": "artifact", "staging": "environment", "production": "environment".
+2. "initial_facts":
+   - Checked out code: {"predicate": "code_checked_out", "arguments": ["<commit>"]}.
+   - Target environment healthy: {"predicate": "environment_healthy", "arguments": ["<environment>"]}.
+3. "negative_constraints":
+   - Prohibited deployments (e.g. "do not deploy to production") -> {"predicate": "deployed_to", "arguments": ["<artifact>", "production"]}.
+4. "goal_facts":
+   - Deployment target: {"predicate": "deployed_to", "arguments": ["<artifact>", "<target_environment>"]}.
+5. Consistency: Only use declared predicates: code_checked_out, tests_passed, security_scanned, artifact_built, approval_granted, deployed_to, environment_healthy."""
+    else:
+        domain_guidelines = f"""CRITICAL FORMALIZATION RULES FOR {domain_name.upper()}:
+1. "entities": Keys MUST be unique snake_case names and values must be one of: {", ".join(valid_types)}.
+2. "initial_facts": Specify known initial conditions using ONLY declared predicates.
+3. "negative_constraints": Specify forbidden conditions or safety invariants as predicate facts.
+4. "goal_facts": Specify target goals that the plan must achieve.
+5. Consistency: All predicate arguments must exist in "entities" with matching types."""
+
+    examples_text = ""
+    if hasattr(domain, "task_examples") and domain.task_examples:
+        lines = ["Example Domain Tasks:"]
+        for ex in domain.task_examples:
+            lines.append(f"- Prompt: \"{ex.get('prompt', '')}\"")
+            lines.append(f"  Goal: {ex.get('goal', '')}")
+        examples_text = "\n" + "\n".join(lines) + "\n"
+
+    desc_line = f"\nDomain Description: {domain_desc}\n" if domain_desc else ""
+
+    return f"""You are a task formalizer for the RE-PLAN-V neurosymbolic system.
+Your job is to convert natural language instructions into a formal TaskProposal JSON schema for the {domain_name} ({domain_id}) environment.{desc_line}
+Allowed Entity Types:
+{", ".join(valid_types)}
+
+Available Predicates:
+{predicates_text}
+
+Available Actions:
+{actions_text}
+
+Respond ONLY with valid JSON conforming to this structure:
+{{
+  "task_id": "task_formalized",
+  "raw_prompt": "<original user prompt>",
+  "entities": {{ "<entity_name>": "<entity_type>" }},
+  "initial_facts": [
+    {{ "predicate": "<predicate_name>", "arguments": ["<arg1>", "<arg2>"] }}
+  ],
+  "goal_facts": [
+    {{ "predicate": "<predicate_name>", "arguments": ["<arg1>", "<arg2>"] }}
+  ],
+  "negative_constraints": [
+    {{ "predicate": "<predicate_name>", "arguments": ["<arg1>"] }}
+  ],
+  "invariants": [],
+  "confidence": 0.95
+}}
+
+{domain_guidelines}
+{examples_text}"""
 
 
 class DomainRouter:
@@ -43,6 +235,18 @@ class DomainRouter:
 
     def __init__(self, registry: Optional[DomainRegistry] = None) -> None:
         self.registry = registry or default_registry
+
+    def get_domain_system_prompt(self, domain_or_id: Union[Domain, str]) -> str:
+        """Returns the authoritative domain-aware system prompt for LLM formalization."""
+        return build_domain_system_prompt(domain_or_id, self.registry)
+
+    def is_domain_supported(self, domain_id: str) -> bool:
+        """Checks if a domain ID or alias is registered and supported."""
+        return self.registry.has(domain_id)
+
+    def get_supported_domains(self) -> List[str]:
+        """Returns the list of all registered unique domain IDs."""
+        return [d.domain_id for d in self.registry.list_domains()]
 
     def route(
         self, prompt: str, explicit_domain_id: Optional[str] = None
@@ -181,9 +385,6 @@ class DomainRouter:
         negative_constraints: List[FactSchema] = []
         typed_constraints: List[TaskConstraintSchema] = []
 
-        # Extract negative constraints across all 6 domains
-        self._extract_negative_constraints(p_clean, best_domain_id, entities, negative_constraints, typed_constraints)
-
         # Extract domain-specific entities, initial facts, and goal facts
         if best_domain_id in ("blocks_world", "blocks"):
             self._extract_blocks_world(p_clean, entities, initial_facts, goal_facts)
@@ -198,7 +399,12 @@ class DomainRouter:
         elif best_domain_id == "software_workflow":
             self._extract_software(p_clean, entities, initial_facts, goal_facts)
 
+        # Resolve safety clauses after entities so multiword names such as
+        # "red box" can match their canonical entity key.
+        self._extract_negative_constraints(p_clean, best_domain_id, entities, negative_constraints, typed_constraints)
+
         confidence = min(0.98, 0.60 + 0.08 * best_score)
+        system_prompt = self.get_domain_system_prompt(best_domain_id)
 
         return DomainRoutingResult(
             outcome=RoutingOutcome.SUPPORTED,
@@ -212,6 +418,7 @@ class DomainRouter:
             typed_constraints=typed_constraints,
             explanation=f"Successfully routed to '{best_domain_id}' with keyword match score {best_score:.1f}.",
             raw_prompt=prompt,
+            system_prompt=system_prompt,
         )
 
     def _extract_negative_constraints(
@@ -265,12 +472,19 @@ class DomainRouter:
                 negative_constraints.append(FactSchema(predicate="sku_stored_in", arguments=(top_clean, bot_clean)))
 
         # Pattern 2: Prohibited movement / touch / holding ("do not move/touch/hold/disturb/pick up X")
-        touch_prohibitions = re.findall(
-            r"(?:do not|don't|never|must not|avoid|without)\s+(?:move|moving|touch|touching|hold|holding|disturb|disturbing|pick up|picking up|retrieve|retrieving)\s+(?:the\s+)?([a-z0-9_]+)",
-            text,
+        verb = r"(?:move|moving|touch|touching|hold|holding|disturb|disturbing|pick\s+up|picking\s+up|retrieve|retrieving)"
+        coordinated_verbs = rf"{verb}(?:\s+(?:or|and)\s+{verb})*"
+        known_entities = sorted(entities, key=len, reverse=True)
+        entity_pattern = "|".join(re.escape(name).replace("_", r"[\s_]+") for name in known_entities)
+        object_pattern = rf"(?:{entity_pattern}|[a-z0-9_]+)" if entity_pattern else r"[a-z0-9_]+"
+        touch_pattern = re.compile(
+            rf"(?:do not|don't|never|must not|avoid|without)\s+{coordinated_verbs}\s+(?:the\s+)?({object_pattern})\b"
         )
+        touch_prohibitions = touch_pattern.findall(text)
         for obj in touch_prohibitions:
             obj_clean = obj.replace(" ", "_")
+            if obj_clean in {"or", "and", "the"}:
+                continue
             if domain_id in ("blocks_world", "blocks"):
                 entities[obj_clean] = "block"
                 negative_constraints.append(FactSchema(predicate="holding", arguments=(obj_clean,)))

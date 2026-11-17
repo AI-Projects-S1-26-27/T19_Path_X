@@ -24,8 +24,8 @@ class PipelineRequest(BaseModel):
     domain_id: Optional[str] = "auto"
     algorithm: str = "A*"
     force_invalid_first_candidate: bool = False
-    provider_type: str = "mock"  # "mock", "ollama", "gemini", "openai"
-    llm_model: Optional[str] = "gemma2:2b"
+    provider_type: str = "gemini"
+    llm_model: Optional[str] = None
 
 
 class BenchmarkRequest(BaseModel):
@@ -234,9 +234,8 @@ def test_formalize(req: FormalizeRequest) -> Dict[str, Any]:
 
 @router.get("/system/providers")
 def get_providers_status() -> Dict[str, Any]:
-    """Returns active status of all formalizer providers (LM Studio, Gemini, Mock)."""
+    """Returns configuration status for the supported cloud formalizer providers."""
     import os
-    import httpx
     from pathlib import Path
     try:
         from dotenv import load_dotenv
@@ -246,54 +245,20 @@ def get_providers_status() -> Dict[str, Any]:
     except Exception:
         pass
 
-    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    gemini_model = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
-
-    nvidia_key = (os.environ.get("NVIDIA_API_KEY") or "").strip()
-    nvidia_model = os.environ.get("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct")
-
-    # Probe LM Studio
-    lm_studio_url = os.environ.get("LM_STUDIO_URL", "http://127.0.0.1:1234")
-    lm_studio_online = False
-    lm_studio_models = []
-    try:
-        with httpx.Client(timeout=1.0, trust_env=False) as client:
-            r = client.get(f"{lm_studio_url}/api/v1/models")
-            if r.status_code == 200:
-                lm_studio_online = True
-                lm_studio_models = [m.get("key") for m in r.json().get("models", []) if m.get("loaded_instances")]
-    except Exception:
-        pass
+    keys = {
+        "openrouter": (os.environ.get("OPENROUTER_API_KEY") or "").strip(),
+        "nvidia": (os.environ.get("NVIDIA_API_KEY") or "").strip(),
+        "gemini": (os.environ.get("GEMINI_API_KEY") or "").strip(),
+    }
+    configured_default = os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
+    default_provider = configured_default if configured_default in keys else "gemini"
 
     return {
+        "default_provider": default_provider,
         "providers": {
-            "mock": {
-                "name": "Deterministic Zero-API Rule Engine",
-                "available": True,
-                "offline": True,
-            },
-            "lmstudio": {
-                "name": "LM Studio Local Server",
-                "url": lm_studio_url,
-                "online": lm_studio_online,
-                "loaded_models": lm_studio_models,
-            },
-            "gemini": {
-                "name": "Google Gemini API (Cloud)",
-                "model": gemini_model,
-                "has_key": bool(gemini_key),
-                "key_preview": f"{gemini_key[:4]}...{gemini_key[-4:]}" if len(gemini_key) > 8 else ("Set" if gemini_key else "Missing (add to .env)"),
-            },
-            "nvidia": {
-                "name": "NVIDIA NIM Cloud",
-                "model": nvidia_model,
-                "has_key": bool(nvidia_key),
-                "key_preview": f"{nvidia_key[:4]}...{nvidia_key[-4:]}" if len(nvidia_key) > 8 else ("Set" if nvidia_key else "Missing (add to .env)"),
-            },
-            "openai": {
-                "name": "OpenAI Compatible Endpoint",
-                "has_key": bool(os.environ.get("OPENAI_API_KEY", "").strip()),
-            },
+            "openrouter": {"name": "OpenRouter", "has_key": bool(keys["openrouter"])},
+            "nvidia": {"name": "NVIDIA NIM Cloud", "has_key": bool(keys["nvidia"])},
+            "gemini": {"name": "Gemini API", "has_key": bool(keys["gemini"])},
         }
     }
 

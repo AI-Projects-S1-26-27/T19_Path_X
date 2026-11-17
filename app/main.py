@@ -21,8 +21,6 @@ def create_app():
     """Factory function for creating the FastAPI application."""
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse
-    from fastapi.staticfiles import StaticFiles
     from app.api.routes import router as api_router
 
     app = FastAPI(
@@ -44,16 +42,6 @@ def create_app():
 
     from app.api.websocket import router as ws_router
     app.include_router(ws_router)
-
-
-    # Static assets and index.html
-    static_dir = Path(__file__).parent / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-        @app.get("/")
-        async def serve_index():
-            return FileResponse(str(static_dir / "index.html"))
 
     @app.get("/health")
     def health():

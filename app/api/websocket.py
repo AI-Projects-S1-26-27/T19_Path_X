@@ -7,6 +7,7 @@ retry, cascade, and backtrack event to the frontend in real-time.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -24,7 +25,7 @@ from core.contracts import (
     VerificationResultSchema,
 )
 from core.logger import get_logger
-from interpretation.router import RoutingOutcome
+from interpretation.router import DomainRouter, RoutingOutcome
 
 logger = get_logger("websocket_router")
 router = APIRouter()
@@ -39,8 +40,8 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
         prompt = req.get("prompt", "Move the red box next to the blue box. Do not move the glass.")
         algorithm = req.get("algorithm", "fastest")
         force_fault = bool(req.get("force_fault", False))
-        provider_type = req.get("provider_type", "mock")
-        llm_model = req.get("llm_model", "gemma2:2b")
+        provider_type = req.get("provider_type", os.environ.get("LLM_PROVIDER", "gemini"))
+        llm_model = req.get("llm_model")
         # 1-second demonstration pacing (requested by user for clear live presentation)
         step_delay = float(req.get("step_delay", 0.9))
 
@@ -54,16 +55,22 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
             if step_delay > 0:
                 await asyncio.sleep(step_delay)
 
-        await emit("PIPELINE_STARTED", "Initializing Retry Tree pipeline...", {
+        fault_state = "enabled" if force_fault else "disabled"
+        await emit("PIPELINE_STARTED", f"Initializing Retry Tree pipeline. Initial-plan fault injection: {fault_state}.", {
             "prompt": prompt,
             "architecture": "retry_tree",
+            "force_fault": force_fault,
+            "provider_type": provider_type,
+            "algorithm": algorithm,
+            "enumerate_graph": bool(req.get("enumerate_graph", True)),
+            "max_nodes": req.get("max_nodes", 250),
         })
 
         # ──── Domain Routing & Clarification Check ─────────────────────
         from core.domains import registry
+        routing = None
         target_domain_id = req.get("domain_id", "auto")
         if target_domain_id == "auto":
-            from interpretation.router import DomainRouter, RoutingOutcome
             router = DomainRouter(registry=registry)
             routing = router.route(prompt)
 
@@ -105,6 +112,13 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
             })
             return
 
+        if routing is None:
+            explicit_routing = DomainRouter(registry=registry).route(
+                prompt, explicit_domain_id=target_domain.domain_id
+            )
+            if explicit_routing.outcome == RoutingOutcome.SUPPORTED:
+                routing = explicit_routing
+
         # ──── Resolve Provider ─────────────────────────────────────────
         is_live = provider_type and provider_type != "mock"
         if is_live:
@@ -135,13 +149,14 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
             provider_name = provider_type
             try:
                 if hasattr(active_provider, 'interpret_with_retry'):
-                    proposal, provider_name = active_provider.interpret_with_retry(
+                    proposal, provider_name = await asyncio.to_thread(
+                        active_provider.interpret_with_retry,
                         prompt=prompt,
                         domain=target_domain,
                         validation_errors=last_validation_errors,
                     )
                 else:
-                    proposal = active_provider.interpret(prompt, target_domain)
+                    proposal = await asyncio.to_thread(active_provider.interpret, prompt, target_domain)
                 t_interp_ms = (time.perf_counter() - t0) * 1000.0
 
                 trace.stage_trace.append(StageAttemptRecord(
@@ -169,16 +184,19 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                     recovery_action="mock_fallback",
                 ))
 
-            # Merge routing-derived constraints if interpreter did not populate them
-            if 'routing' in locals() and routing:
-                if getattr(routing, "typed_constraints", None) and not getattr(proposal, "typed_constraints", []):
-                    proposal.typed_constraints = list(routing.typed_constraints)
-                if getattr(routing, "negative_constraints", None) and not getattr(proposal, "negative_constraints", []):
-                    proposal.negative_constraints = list(routing.negative_constraints)
+            # Merge router-derived safety constraints even if the LLM supplied
+            # some constraints of its own; the proposal remains untrusted.
+            if routing is not None:
+                for constraint in routing.typed_constraints:
+                    if constraint not in proposal.typed_constraints:
+                        proposal.typed_constraints.append(constraint)
+                for constraint in routing.negative_constraints:
+                    if constraint not in proposal.negative_constraints:
+                        proposal.negative_constraints.append(constraint)
 
             # ─── Stage 2: Validation & Problem Construction ───────────
             t1 = time.perf_counter()
-            build_res = builder.build_from_proposal(proposal, target_domain, routing_result=routing if 'routing' in locals() else None)
+            build_res = builder.build_from_proposal(proposal, target_domain, routing_result=routing)
             t_val_ms = (time.perf_counter() - t1) * 1000.0
 
             is_valid = build_res.validation_result.is_valid if build_res.validation_result else build_res.is_success
@@ -297,7 +315,7 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                     t_start = time.perf_counter()
                     try:
                         p = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
-                        plan_result = p.search(problem, target_domain)
+                        plan_result = await asyncio.to_thread(p.search, problem, target_domain)
                         elapsed_ms = (time.perf_counter() - t_start) * 1000.0
 
                         entry = {
@@ -336,7 +354,7 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                         stage="PLAN",
                         attempt=1,
                         status=PipelineStageStatus.SUCCESS,
-                        provider_used=f"{used_algorithm} (Fastest to Goal)",
+                        provider_used=f"{used_algorithm} (fastest measured)",
                         duration_ms=t_plan_ms,
                         recovery_action=None,
                     ))
@@ -363,7 +381,7 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                     t2 = time.perf_counter()
                     try:
                         planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
-                        plan_result = planner.search(problem, target_domain)
+                        plan_result = await asyncio.to_thread(planner.search, problem, target_domain)
                         t_plan_ms = (time.perf_counter() - t2) * 1000.0
 
                         if plan_result.is_success:
@@ -427,7 +445,7 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                 )
 
             search_msg = (
-                f"Candidate plan found via {used_algorithm} [Fastest Optimized Search to Goal: {t_plan_ms:.2f} ms | {len(candidate.actions)} actions, cost: {candidate.total_cost}]."
+                f"Candidate plan found via {used_algorithm} [fastest measured of A*, BFS, and Greedy Best-First: {t_plan_ms:.2f} ms | {len(candidate.actions)} actions, cost: {candidate.total_cost}]."
                 if is_fastest_mode
                 else f"Candidate plan found via {used_algorithm} in {t_plan_ms:.1f} ms ({len(candidate.actions)} actions, cost: {candidate.total_cost})."
             )
@@ -486,7 +504,8 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                 if 'planner' not in locals() or planner is None:
                     planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(used_algorithm or "A*")
                 orchestrator.replanning_engine.planner = planner
-                replan_res = orchestrator.replanning_engine.run_repair_loop(
+                replan_res = await asyncio.to_thread(
+                    orchestrator.replanning_engine.run_repair_loop,
                     problem=problem,
                     domain=target_domain,
                     initial_candidate=candidate,

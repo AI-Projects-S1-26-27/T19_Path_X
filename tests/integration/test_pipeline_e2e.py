@@ -81,12 +81,6 @@ class TestFastAPIRoutesE2E:
         assert "research_question" in data
         assert "available_algorithms" in data
 
-    def test_static_index_html(self, client: TestClient):
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert "text/html" in resp.headers.get("content-type", "")
-        assert "RE-PLAN-V" in resp.text
-
     def test_pipeline_run_endpoint_valid(self, client: TestClient):
         resp = client.post(
             "/api/pipeline/run",
