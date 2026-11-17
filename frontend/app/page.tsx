@@ -9,6 +9,7 @@ import { StateSpaceExplorer } from "../components/StateSpaceExplorer";
 import { DomainStudio } from "../components/DomainStudio";
 import { BenchmarkTab } from "../components/BenchmarkTab";
 import { ArchitectureRulesTab } from "../components/ArchitectureRulesTab";
+import { PipelineEventLog } from "../components/PipelineEventLog";
 import { AcademicDefenseModal } from "../components/AcademicDefenseModal";
 import { usePipelineWebSocket } from "../hooks/usePipelineWebSocket";
 import { HelpCircle, AlertOctagon, Network } from "lucide-react";
@@ -86,7 +87,7 @@ export default function Home() {
                 <div className="flex items-center gap-2">
                   <Network className="h-4 w-4 text-cyan-400" />
                   <span className="text-slate-300">
-                    Model B State-Space Graph: <strong className="text-cyan-300 font-mono">{state.graphNodes.length}</strong> reachable states &amp; <strong className="text-cyan-300 font-mono">{state.graphEdges.length}</strong> transitions discovered.
+                    Model B State-Space Graph{state.graphStatus === "TRUNCATED" ? " (partial; exploration budget reached)" : state.graphStatus === "COMPLETED" ? " (complete)" : ""}: <strong className="text-cyan-300 font-mono">{state.graphNodes.length}</strong> states &amp; <strong className="text-cyan-300 font-mono">{state.graphEdges.length}</strong> transitions streamed.
                   </span>
                 </div>
                 <button
@@ -125,6 +126,7 @@ export default function Home() {
               {/* Right Column: Live Execution Trace Stepper */}
               <div className="lg:col-span-7">
                 <ExecutionStepper state={state} isStreaming={isStreaming} />
+                <PipelineEventLog events={events} isStreaming={isStreaming} />
               </div>
             </div>
           </div>

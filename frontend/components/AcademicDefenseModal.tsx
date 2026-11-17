@@ -51,16 +51,13 @@ export function AcademicDefenseModal({ isOpen, onClose }: AcademicDefenseModalPr
               </ul>
             </div>
 
-            {/* Why 2B Model */}
-            {/* Why 2B Model */}
             <div className="rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-4">
               <h4 className="font-mono text-xs font-bold uppercase text-cyan-300">
-                2. "Why a 2-Billion Parameter Model Excels Here"
+                2. Cloud Formalization and Verification
               </h4>
               <p className="mt-1 leading-relaxed text-slate-300">
-                Stand-alone large LLMs fail up to 65% of the time on complex planning benchmarks (PlanBench). 
-                In RE-PLAN-V, pairing a local <strong>2B model (Gemma 2 2B / Qwen 2.5) with our authoritative verifier</strong> provides 
-                formal plan validity guarantees within modeled domain semantics at zero cloud cost.
+                A selected cloud provider converts the instruction into a symbolic task proposal. RE-PLAN-V then checks proposed plans
+                against the registered domain model before marking them ready.
               </p>
             </div>
 
@@ -70,7 +67,7 @@ export function AcademicDefenseModal({ isOpen, onClose }: AcademicDefenseModalPr
                 3. Distributed Edge-GPU Architecture
               </h4>
               <p className="mt-1 leading-relaxed text-slate-300">
-                Our system supports distributed deployment: your friend's 8GB GPU laptop runs Ollama (<code className="text-amber-200">OLLAMA_HOST=0.0.0.0:11434</code>) over local WiFi, while your laptop runs the authoritative symbolic verifier.
+                The language model proposes a symbolic task representation; planning and verification apply the registered domain rules.
               </p>
             </div>
 

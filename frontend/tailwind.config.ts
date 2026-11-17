@@ -5,6 +5,9 @@ const config: Config = {
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
     "./hooks/**/*.{js,ts,jsx,tsx,mdx}",
+    "./frontend/app/**/*.{js,ts,jsx,tsx,mdx}",
+    "./frontend/components/**/*.{js,ts,jsx,tsx,mdx}",
+    "./frontend/hooks/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
     extend: {
