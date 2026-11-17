@@ -150,6 +150,7 @@ class PipelineOrchestrator:
         """
         start_time = time.perf_counter()
         trace = PipelineDecisionTrace()
+        routing = None
 
         # ──── Resolve Active Domain ─────────────────────────────────────
         active_domain = self.domain
@@ -291,6 +292,15 @@ class PipelineOrchestrator:
                 active_domain = matched
                 routed_domain_id = active_domain.domain_id
 
+        if routing is None and domain_id and domain_id != "auto":
+            from core.domains import registry
+            from interpretation.router import DomainRouter, RoutingOutcome
+            explicit_routing = DomainRouter(registry=registry).route(
+                prompt, explicit_domain_id=routed_domain_id
+            )
+            if explicit_routing.outcome == RoutingOutcome.SUPPORTED:
+                routing = explicit_routing
+
         # ──── Resolve LLM provider ─────────────────────────────────────
         import os
         effective_provider = provider_type
@@ -380,12 +390,15 @@ class PipelineOrchestrator:
                 proposal = self.llm_provider.interpret(prompt, active_domain)
                 provider_name = "mock_fallback"
 
-            # Merge routing-derived typed and negative constraints if interpreter did not populate them
-            if 'routing' in locals() and routing:
-                if getattr(routing, "typed_constraints", None) and not getattr(proposal, "typed_constraints", []):
-                    proposal.typed_constraints = list(routing.typed_constraints)
-                if getattr(routing, "negative_constraints", None) and not getattr(proposal, "negative_constraints", []):
-                    proposal.negative_constraints = list(routing.negative_constraints)
+            # Merge router-derived safety constraints even when the LLM returned
+            # some constraints of its own; the proposal remains untrusted.
+            if routing is not None:
+                for constraint in routing.typed_constraints:
+                    if constraint not in proposal.typed_constraints:
+                        proposal.typed_constraints.append(constraint)
+                for constraint in routing.negative_constraints:
+                    if constraint not in proposal.negative_constraints:
+                        proposal.negative_constraints.append(constraint)
 
             # Optional Vision perception integration
             if image is not None:
@@ -399,7 +412,7 @@ class PipelineOrchestrator:
             build_res = self.problem_builder.build_from_proposal(
                 proposal,
                 active_domain,
-                routing_result=routing if 'routing' in locals() else None,
+                routing_result=routing,
             )
             t_val_ms = (time.perf_counter() - t1) * 1000.0
 
@@ -543,7 +556,7 @@ class PipelineOrchestrator:
                         stage="PLAN",
                         attempt=1,
                         status=PipelineStageStatus.SUCCESS,
-                        provider_used=f"{used_algorithm} (Fastest to Goal)",
+                        provider_used=f"{used_algorithm} (fastest measured)",
                         duration_ms=t_plan_ms,
                         recovery_action=None,
                         details={"nodes_expanded": best_res.nodes_expanded, "actions": len(best_res.actions)},
