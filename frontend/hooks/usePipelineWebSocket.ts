@@ -41,9 +41,12 @@ export interface PipelineAccumulatedState {
   verificationTimeMs?: number;
   decisionTrace?: any;
   plannerAlgorithm?: string;
+  requestedAlgorithm?: string;
   providerUsed?: string;
   cascadeCount?: number;
   backtrackCount?: number;
+  searchBenchmark?: Array<{ algorithm: string; duration_ms: number; cost: number; nodes_expanded: number; is_winner: boolean; is_success: boolean }>;
+  isFastestSearchMode?: boolean;
   treeLog?: Array<{ stage: string; message: string; timestamp: number; type: "info" | "warning" | "recovery" }>;
   // Graph exploration state
   graphNodes: GraphNode[];
@@ -65,7 +68,8 @@ const initialState: PipelineAccumulatedState = {
   finalPlan: [],
   isFinalVerified: null,
   executionTimeMs: 0,
-  plannerAlgorithm: "A*",
+  plannerAlgorithm: "",
+  requestedAlgorithm: "",
   providerUsed: "auto",
   cascadeCount: 0,
   backtrackCount: 0,
@@ -81,7 +85,6 @@ function normalizeGraphNode(n: any): GraphNode {
   return {
     id,
     node_id: id,
-    state_hash: n.state_hash || id,
     depth: typeof n.depth === "number" ? n.depth : 0,
     is_initial: Boolean(n.is_initial),
     is_goal: Boolean(n.is_goal),
@@ -156,7 +159,25 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
     (req: PipelineRunRequest) => {
       reset();
       setIsStreaming(true);
-      setState((prev) => ({ ...prev, prompt: req.prompt }));
+
+      const isFastest = !req.algorithm || req.algorithm.toLowerCase() === "fastest" || req.algorithm.toLowerCase() === "auto";
+      const userAlgo = isFastest
+        ? "Fastest Optimized Search"
+        : (req.algorithm.toUpperCase() === "ASTAR" || req.algorithm === "A*")
+        ? "A*"
+        : req.algorithm.toUpperCase() === "BFS"
+        ? "BFS"
+        : (req.algorithm.toUpperCase() === "BEST_FIRST" || req.algorithm.toLowerCase() === "best_first")
+        ? "BEST_FIRST"
+        : req.algorithm;
+
+      setState({
+        ...initialState,
+        prompt: req.prompt,
+        plannerAlgorithm: userAlgo,
+        requestedAlgorithm: userAlgo,
+        isFastestSearchMode: isFastest,
+      });
 
       const wsUrl = getWebSocketUrl("/ws/pipeline");
 
@@ -288,6 +309,8 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                 candidateCost: data.data.cost || 0,
                 searchTimeMs: data.data.stage_duration_ms,
                 plannerAlgorithm: data.data.algorithm || prev.plannerAlgorithm,
+                searchBenchmark: data.data.search_benchmark,
+                isFastestSearchMode: Boolean(data.data.is_fastest_mode ?? prev.isFastestSearchMode),
               }));
             } else if (data.stage === "VERIFICATION_RESULT") {
               setState((prev) => ({

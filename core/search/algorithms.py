@@ -461,10 +461,12 @@ class AStarPlanner(BasePlanner):
 
 def get_planner_by_name(name: str) -> BasePlanner:
     n = name.strip().upper()
-    if n == "BFS":
+    if n in ("AUTO", "AUTOMATIC", "CASCADE", "FASTEST", "FASTEST_OPTIMIZED", "FASTEST_OPTIMAL"):
+        return AStarPlanner()
+    elif n == "BFS":
         return BFSPlanner()
     elif n in ("BEST_FIRST", "BESTFIRST", "GREEDY"):
         return BestFirstPlanner()
     elif n in ("A*", "ASTAR"):
         return AStarPlanner()
-    raise ValueError(f"Unknown planner algorithm '{name}'. Choose from 'BFS', 'BEST_FIRST', 'A*'.")
+    raise ValueError(f"Unknown planner algorithm '{name}'. Choose from 'auto', 'BFS', 'BEST_FIRST', 'A*'.")
