@@ -147,22 +147,28 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
   const [state, setState] = useState<PipelineAccumulatedState>(initialState);
   const [error, setError] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  const receivedEventRef = useRef(false);
+  const terminalEventRef = useRef(false);
 
   const reset = useCallback(() => {
     setEvents([]);
     setState(initialState);
     setError(null);
     setIsStreaming(false);
+    receivedEventRef.current = false;
+    terminalEventRef.current = false;
   }, []);
 
   const runPipeline = useCallback(
     (req: PipelineRunRequest) => {
       reset();
       setIsStreaming(true);
+      receivedEventRef.current = false;
+      terminalEventRef.current = false;
 
       const isFastest = !req.algorithm || req.algorithm.toLowerCase() === "fastest" || req.algorithm.toLowerCase() === "auto";
       const userAlgo = isFastest
-        ? "Fastest Optimized Search"
+        ? "Fastest measured of A*, BFS, and Greedy Best-First"
         : (req.algorithm.toUpperCase() === "ASTAR" || req.algorithm === "A*")
         ? "A*"
         : req.algorithm.toUpperCase() === "BFS"
@@ -192,6 +198,7 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
         ws.onmessage = (event) => {
           try {
             const data: PipelineStreamEvent = JSON.parse(event.data);
+            receivedEventRef.current = true;
             setEvents((prev) => [...prev, data]);
 
             // Update accumulated state stage by stage
@@ -215,6 +222,7 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                   { stage: "CLARIFICATION", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
                 ],
               }));
+              terminalEventRef.current = true;
               setIsStreaming(false);
               ws.close();
             } else if (data.stage === "TASK_UNSUPPORTED") {
@@ -227,6 +235,7 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                   { stage: "UNSUPPORTED", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
                 ],
               }));
+              terminalEventRef.current = true;
               setIsStreaming(false);
               ws.close();
             } else if (data.stage === "GRAPH_ENUMERATION_STARTED") {
@@ -354,6 +363,7 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                 decisionTrace: data.data.decision_trace || prev.decisionTrace,
               }));
             } else if (data.stage === "PIPELINE_FINISHED" || data.stage === "ERROR") {
+              terminalEventRef.current = true;
               setIsStreaming(false);
               ws.close();
             }
@@ -364,6 +374,12 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
 
         ws.onerror = async () => {
           console.warn("WebSocket error; falling back to REST endpoint /api/pipeline/run");
+          if (receivedEventRef.current) {
+            setError("The WebSocket stream disconnected before the pipeline finished. Check the live event log for the last completed stage.");
+            setIsStreaming(false);
+            ws.close();
+            return;
+          }
           // Fallback to REST API
           try {
             const resp = await fetch(`${getApiBaseUrl()}/api/pipeline/run`, {
@@ -374,7 +390,6 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                 algorithm: req.algorithm,
                 force_invalid_first_candidate: req.force_fault,
                 provider_type: req.provider_type,
-                llm_model: req.llm_model,
               }),
             });
             if (!resp.ok) throw new Error(await resp.text());
@@ -404,6 +419,13 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
           } catch (err: any) {
             setError(err.message || "Failed to execute pipeline via REST fallback");
           } finally {
+            setIsStreaming(false);
+          }
+        };
+
+        ws.onclose = () => {
+          if (receivedEventRef.current && !terminalEventRef.current) {
+            setError("The WebSocket closed before the pipeline sent a terminal event.");
             setIsStreaming(false);
           }
         };

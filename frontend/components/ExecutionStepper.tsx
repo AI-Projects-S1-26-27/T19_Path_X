@@ -21,6 +21,15 @@ interface ExecutionStepperProps {
   isStreaming: boolean;
 }
 
+function providerLabel(provider: string): string {
+  const normalized = provider.toLowerCase().split(":", 1)[0];
+  if (normalized === "openrouter") return "OpenRouter";
+  if (normalized === "nvidia") return "NVIDIA NIM Cloud";
+  if (normalized === "gemini") return "Gemini API";
+  if (normalized.includes("mock")) return "Configured fallback";
+  return provider;
+}
+
 export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) {
   const hasStarted = Boolean(state.prompt);
 
@@ -39,10 +48,13 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
 
   const backtracks = state.backtrackCount || (state.decisionTrace?.backtracks ?? 0);
   const cascades = state.cascadeCount || (state.decisionTrace?.planner_cascades ?? 0);
-  const provider = state.providerUsed || state.decisionTrace?.final_provider || "Auto-Select";
+  const provider = providerLabel(state.providerUsed || state.decisionTrace?.final_provider || "Configured provider");
   const isFastest = Boolean(state.isFastestSearchMode || state.requestedAlgorithm?.includes("Fastest"));
   const isPlanFound = state.candidatePlan.length > 0;
-  const algorithm = state.plannerAlgorithm || state.requestedAlgorithm || state.decisionTrace?.final_algorithm || (isFastest ? "Fastest Optimized Search" : "Authoritative Search");
+  const algorithm = state.plannerAlgorithm || state.requestedAlgorithm || state.decisionTrace?.final_algorithm || (isFastest ? "Fastest measured" : "Authoritative Search");
+  const algorithmLabel = algorithm.toUpperCase().replaceAll("_", " ") === "BEST FIRST"
+    ? "Greedy Best-First"
+    : algorithm;
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-xl backdrop-blur-sm">
@@ -74,7 +86,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
             Provider: {provider}
           </span>
           <span className="rounded bg-indigo-900/60 px-2 py-0.5 text-indigo-200 border border-indigo-500/30">
-            Planner: {isFastest ? (isPlanFound ? `${algorithm} (Fastest to Goal)` : "Fastest Optimized Search") : algorithm}
+            Search selection: {isFastest ? (isPlanFound ? `Fastest measured: ${algorithmLabel}` : "Comparing A*, BFS, and Greedy Best-First") : algorithmLabel}
           </span>
           {backtracks > 0 ? (
             <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-300 border border-amber-500/40">
@@ -182,7 +194,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-slate-200">
-                  2. Candidate Plan Search {isFastest ? (isPlanFound ? `(Fastest: ${algorithm})` : "(Fastest Optimized Search)") : `(${algorithm})`}
+                  2. Candidate Plan Search {isFastest ? (isPlanFound ? `(Fastest measured: ${algorithmLabel})` : "(Comparing A*, BFS, and Greedy Best-First)") : `(${algorithmLabel})`}
                 </span>
                 {state.searchTimeMs !== undefined && (
                   <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
@@ -191,7 +203,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                 )}
                 {isFastest && (
                   <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
-                    🏆 FASTEST OPTIMIZED SEARCH
+                    🏆 FASTEST MEASURED
                   </span>
                 )}
               </div>
@@ -204,10 +216,10 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
             {state.candidatePlan.length > 0 && state.isFastestSearchMode && (
               <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-2.5 text-[11px] text-emerald-200">
                 <div className="flex flex-wrap items-center gap-1.5 font-semibold text-emerald-300 mb-1">
-                  <span>🏆 Best Optimized Search Selected:</span>
-                  <span className="font-mono font-bold text-white underline decoration-emerald-400">{algorithm}</span>
+                  <span>🏆 Fastest measured search:</span>
+                  <span className="font-mono font-bold text-white underline decoration-emerald-400">{algorithmLabel}</span>
                   <span className="text-slate-300 font-normal">
-                    &mdash; benchmarked as the fastest search to reach the final goal state ({state.searchTimeMs?.toFixed(1) ?? "0"} ms)
+                    &mdash; lowest measured runtime among the successful candidates ({state.searchTimeMs?.toFixed(1) ?? "0"} ms); this does not mean the shortest or optimal plan.
                   </span>
                 </div>
                 {state.searchBenchmark && state.searchBenchmark.length > 0 && (
@@ -286,6 +298,9 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                   : "Checking..."}
               </span>
             </div>
+            <p className="mt-1 text-[11px] text-slate-400">
+              The verifier replays each action from the initial state and checks its preconditions, safety constraints, invariants, and final goals.
+            </p>
             {state.verificationFailureMessage && (
               <p className="mt-1 font-mono text-[11px] text-rose-300">
                 {state.verificationFailureMessage}
@@ -314,12 +329,12 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                   Ready for Robotic Dispatch
                 </h4>
                 <p className="text-[11px] text-slate-400">
-                  100% mathematically verified against preconditions, mutexes, and negative invariants.
+                  The final plan passed the modeled precondition, safety-constraint, invariant, and goal checks.
                 </p>
               </div>
             </div>
             <span className="rounded-full bg-emerald-500/20 px-3 py-1 font-mono text-xs font-bold text-emerald-300">
-              SAFETY GUARANTEED
+              VERIFIED UNDER MODEL
             </span>
           </div>
         )}

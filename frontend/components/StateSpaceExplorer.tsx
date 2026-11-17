@@ -53,8 +53,10 @@ export function StateSpaceExplorer({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
-  // Pan navigation with fixed ideal zoom ratio for optimal readability
-  const FIXED_ZOOM = 0.9;
+  // Zoom & Pan navigation state with focal-point cursor zooming
+  const MIN_ZOOM = 0.2;
+  const MAX_ZOOM = 3.5;
+  const [zoom, setZoom] = useState<number>(0.9);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -312,23 +314,23 @@ export function StateSpaceExplorer({
   }, [nodePositions]);
 
   // Centering pan calculation: positions the graph in the exact center of the SVG display
-  const getCenteredPan = useCallback(() => {
+  const getCenteredPan = useCallback((targetZoom: number = zoom) => {
     const el = svgRef.current || containerRef.current;
     const viewW = el && el.clientWidth > 0 ? el.clientWidth : 850;
     const viewH = el && el.clientHeight > 0 ? el.clientHeight : 580;
 
-    const targetX = Math.round(viewW / 2 - graphBounds.centerX * FIXED_ZOOM);
-    const scaledGraphH = graphBounds.height * FIXED_ZOOM;
+    const targetX = Math.round(viewW / 2 - graphBounds.centerX * targetZoom);
+    const scaledGraphH = graphBounds.height * targetZoom;
 
     let targetY: number;
     if (scaledGraphH <= viewH - 140) {
-      targetY = Math.round(viewH / 2 - graphBounds.centerY * FIXED_ZOOM);
+      targetY = Math.round(viewH / 2 - graphBounds.centerY * targetZoom);
     } else {
-      targetY = Math.round(65 - graphBounds.minY * FIXED_ZOOM);
+      targetY = Math.round(65 - graphBounds.minY * targetZoom);
     }
 
     return { x: targetX, y: targetY };
-  }, [graphBounds, FIXED_ZOOM]);
+  }, [graphBounds, zoom]);
 
   // Helper to format any state ID into a clean friendly identifier (e.g., s0, s1, etc.)
   // and guarantee that no raw hexadecimal hash strings are ever rendered.
@@ -405,20 +407,96 @@ export function StateSpaceExplorer({
     setIsDragging(false);
   };
 
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    hasUserPanned.current = true;
-    // Scroll wheel pans the canvas smoothly instead of zooming
-    setPan((prev) => ({
-      x: prev.x - (e.shiftKey ? e.deltaY : e.deltaX),
-      y: prev.y - (e.shiftKey ? 0 : e.deltaY),
-    }));
-  };
-
   const resetView = () => {
     hasUserPanned.current = false;
-    setPan(getCenteredPan());
+    setZoom(0.9);
+    setPan(getCenteredPan(0.9));
   };
+
+  const zoomIn = () => {
+    const el = containerRef.current;
+    const rect = el ? el.getBoundingClientRect() : { width: 850, height: 580 };
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    setZoom((prevZoom) => {
+      const newZoom = Math.min(MAX_ZOOM, parseFloat((prevZoom * 1.2).toFixed(2)));
+      if (newZoom === prevZoom) return prevZoom;
+      setPan((prevPan) => {
+        hasUserPanned.current = true;
+        const graphX = (centerX - prevPan.x) / prevZoom;
+        const graphY = (centerY - prevPan.y) / prevZoom;
+        return {
+          x: Math.round(centerX - graphX * newZoom),
+          y: Math.round(centerY - graphY * newZoom),
+        };
+      });
+      return newZoom;
+    });
+  };
+
+  const zoomOut = () => {
+    const el = containerRef.current;
+    const rect = el ? el.getBoundingClientRect() : { width: 850, height: 580 };
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+
+    setZoom((prevZoom) => {
+      const newZoom = Math.max(MIN_ZOOM, parseFloat((prevZoom / 1.2).toFixed(2)));
+      if (newZoom === prevZoom) return prevZoom;
+      setPan((prevPan) => {
+        hasUserPanned.current = true;
+        const graphX = (centerX - prevPan.x) / prevZoom;
+        const graphY = (centerY - prevPan.y) / prevZoom;
+        return {
+          x: Math.round(centerX - graphX * newZoom),
+          y: Math.round(centerY - graphY * newZoom),
+        };
+      });
+      return newZoom;
+    });
+  };
+
+  // Native wheel listener to handle cursor-targeted zoom and completely prevent browser scrolling
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const onWheel = (e: WheelEvent) => {
+      // Completely prevent browser window or parent container from scrolling
+      e.preventDefault();
+      e.stopPropagation();
+
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+
+      // Smooth zoom scaling factor: zoom in when scrolling up, zoom out when scrolling down
+      const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+
+      setZoom((prevZoom) => {
+        const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, parseFloat((prevZoom * zoomFactor).toFixed(3))));
+        if (newZoom === prevZoom) return prevZoom;
+
+        setPan((prevPan) => {
+          hasUserPanned.current = true;
+          const graphX = (mouseX - prevPan.x) / prevZoom;
+          const graphY = (mouseY - prevPan.y) / prevZoom;
+          return {
+            x: Math.round(mouseX - graphX * newZoom),
+            y: Math.round(mouseY - graphY * newZoom),
+          };
+        });
+
+        return newZoom;
+      });
+    };
+
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      container.removeEventListener("wheel", onWheel);
+    };
+  }, [MIN_ZOOM, MAX_ZOOM]);
 
   // Automatically center graph on initial load or when nodes change
   useEffect(() => {
@@ -915,18 +993,39 @@ export function StateSpaceExplorer({
           )}
         </div>
 
-        {/* View Controls: Pan Only with Fixed Optimal Visibility Zoom */}
+        {/* View Controls: Zoom & Pan */}
         <div className="flex items-center gap-2">
+          <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900/80 p-0.5">
+            <button
+              type="button"
+              onClick={zoomOut}
+              title="Zoom Out"
+              className="h-7 w-7 rounded flex items-center justify-center hover:bg-slate-800 text-slate-300 font-bold hover:text-white transition text-xs"
+            >
+              −
+            </button>
+            <span className="px-2 font-mono text-[11px] text-cyan-400 min-w-[45px] text-center font-medium">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={zoomIn}
+              title="Zoom In"
+              className="h-7 w-7 rounded flex items-center justify-center hover:bg-slate-800 text-slate-300 font-bold hover:text-white transition text-xs"
+            >
+              +
+            </button>
+          </div>
           <button
             type="button"
             onClick={resetView}
-            title="Center Graph in Display"
+            title="Center Graph in Display & Reset Zoom to 90%"
             className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition"
           >
             Center Graph
           </button>
-          <span className="text-[11px] font-mono text-slate-400 border border-slate-800 bg-slate-900 px-2 py-1 rounded">
-            Fixed View: 90%
+          <span className="text-[10px] text-slate-400 hidden sm:inline border border-slate-800/80 bg-slate-900/50 px-2 py-1 rounded-md">
+            Scroll to Zoom · Drag to Pan
           </span>
         </div>
       </div>
@@ -1165,7 +1264,6 @@ export function StateSpaceExplorer({
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onWheel={handleWheel}
         >
           {/* Legend and Filter Bar Overlay */}
           <div className="absolute top-3 left-3 z-10 flex flex-wrap items-center gap-2 rounded-xl bg-slate-900/90 p-2 text-xs border border-slate-800 backdrop-blur-md">
@@ -1228,6 +1326,38 @@ export function StateSpaceExplorer({
             </span>
           </div>
 
+          {/* Floating Canvas Zoom Controls */}
+          <div className="absolute bottom-3 right-3 z-10 flex items-center gap-1 rounded-lg bg-slate-900/90 p-1 text-[11px] border border-slate-800 backdrop-blur-sm shadow-xl text-slate-300">
+            <button
+              type="button"
+              onClick={zoomOut}
+              title="Zoom Out (Mouse Wheel Down)"
+              className="h-6 w-6 rounded flex items-center justify-center hover:bg-slate-800 text-slate-300 font-bold hover:text-white transition"
+            >
+              −
+            </button>
+            <span className="px-1.5 py-0.5 font-mono text-[11px] text-cyan-400 min-w-[42px] text-center font-medium">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              onClick={zoomIn}
+              title="Zoom In (Mouse Wheel Up)"
+              className="h-6 w-6 rounded flex items-center justify-center hover:bg-slate-800 text-slate-300 font-bold hover:text-white transition"
+            >
+              +
+            </button>
+            <div className="h-3.5 w-px bg-slate-700 mx-0.5" />
+            <button
+              type="button"
+              onClick={resetView}
+              title="Center Graph & Reset Zoom to 90%"
+              className="px-2 py-0.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white text-[10px] font-medium transition"
+            >
+              Reset
+            </button>
+          </div>
+
           {/* SVG Canvas */}
           <svg ref={svgRef} className="w-full h-full flex-1 cursor-grab active:cursor-grabbing">
             <defs>
@@ -1263,7 +1393,7 @@ export function StateSpaceExplorer({
               </marker>
             </defs>
 
-            <g transform={`translate(${pan.x}, ${pan.y}) scale(${FIXED_ZOOM})`}>
+            <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
               {/* Edges */}
               {currentEdges.map((edge, idx) => {
                 const s = nodePositions[edge.source];

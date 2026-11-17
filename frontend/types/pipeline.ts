@@ -181,13 +181,9 @@ export interface PipelineStreamEvent {
 }
 
 export type LLMProviderType =
-  | "mock"
-  | "lmstudio"
-  | "ollama"
-  | "gemini"
-  | "openai"
+  | "openrouter"
   | "nvidia"
-  | string;
+  | "gemini";
 
 export interface PipelineRunRequest {
   prompt: string;
@@ -195,7 +191,6 @@ export interface PipelineRunRequest {
   domain_id?: string;
   force_fault: boolean;
   provider_type: LLMProviderType;
-  llm_model?: string;
   enumerate_graph?: boolean;
   max_nodes?: number;
   max_edges?: number;

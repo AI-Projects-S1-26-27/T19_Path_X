@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 import { Play, Sparkles, AlertTriangle, Layers, Wand2, Compass, Network } from "lucide-react";
-import { PipelineRunRequest } from "../types/pipeline";
+import { LLMProviderType, PipelineRunRequest } from "../types/pipeline";
+import { getApiBaseUrl } from "../utils/api";
 
 interface TaskControlPanelProps {
   onRun: (req: PipelineRunRequest) => void;
@@ -92,8 +93,23 @@ export function TaskControlPanel({
   const [forceFault, setForceFault] = useState(false);
   const [enumerateGraph, setEnumerateGraph] = useState(true);
   const [maxNodes, setMaxNodes] = useState(150);
-  const [providerType, setProviderType] = useState("mock");
-  const [llmModel, setLlmModel] = useState("gemma2:2b");
+  const [providerType, setProviderType] = useState<LLMProviderType>("gemini");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${getApiBaseUrl()}/api/system/providers`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((status) => {
+        const configured = status?.default_provider;
+        if (["openrouter", "nvidia", "gemini"].includes(configured)) {
+          setProviderType(configured as LLMProviderType);
+        }
+      })
+      .catch(() => {
+        // Keep Gemini selected when provider configuration cannot be fetched.
+      });
+    return () => controller.abort();
+  }, []);
 
   // Synchronize external prompt if changed from DomainStudio
   useEffect(() => {
@@ -124,7 +140,6 @@ export function TaskControlPanel({
       domain_id: domainId,
       force_fault: forceFault,
       provider_type: providerType,
-      llm_model: llmModel,
       enumerate_graph: enumerateGraph,
       max_nodes: maxNodes,
       max_edges: maxNodes * 3,
@@ -157,6 +172,7 @@ export function TaskControlPanel({
           </div>
           <textarea
             value={prompt}
+            disabled={isStreaming}
             onChange={(e) => {
               setPrompt(e.target.value);
               onPromptChange?.(e.target.value);
@@ -202,6 +218,7 @@ export function TaskControlPanel({
             </label>
             <select
               value={domainId}
+              disabled={isStreaming}
               onChange={(e) => setDomainId(e.target.value)}
               style={{ colorScheme: "dark" }}
               className="w-full rounded-xl border border-slate-700 bg-slate-900 p-2.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
@@ -223,11 +240,12 @@ export function TaskControlPanel({
             </label>
             <select
               value={algorithm}
+              disabled={isStreaming}
               onChange={(e) => setAlgorithm(e.target.value)}
               style={{ colorScheme: "dark" }}
               className="w-full rounded-xl border border-slate-700 bg-slate-900 p-2.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
             >
-              <option value="fastest" className="bg-slate-900 text-slate-100 py-1.5">Fastest Optimized Search</option>
+              <option value="fastest" className="bg-slate-900 text-slate-100 py-1.5">Fastest measured of A*, BFS, and Greedy Best-First</option>
               <option value="A*" className="bg-slate-900 text-slate-100 py-1.5">A* Search (Optimal Uniform-Cost / Admissible)</option>
               <option value="BFS" className="bg-slate-900 text-slate-100 py-1.5">Breadth-First Search (BFS)</option>
               <option value="BEST_FIRST" className="bg-slate-900 text-slate-100 py-1.5">Greedy Best-First Search</option>
@@ -244,16 +262,14 @@ export function TaskControlPanel({
             </label>
             <select
               value={providerType}
-              onChange={(e) => setProviderType(e.target.value)}
+              disabled={isStreaming}
+              onChange={(e) => setProviderType(e.target.value as LLMProviderType)}
               style={{ colorScheme: "dark" }}
               className="w-full rounded-xl border border-slate-700 bg-slate-900 p-2.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
             >
-              <option value="mock" className="bg-slate-900 text-slate-100 py-1.5">Deterministic Zero-API (Offline)</option>
-              <option value="nvidia" className="bg-slate-900 text-slate-100 py-1.5">NVIDIA NIM Cloud (meta/llama-3.1-8b-instruct)</option>
-              <option value="lmstudio" className="bg-slate-900 text-slate-100 py-1.5">LM Studio Local Model (http://127.0.0.1:1234)</option>
-              <option value="ollama" className="bg-slate-900 text-slate-100 py-1.5">Local 2B Model (Ollama: gemma2:2b / qwen2.5)</option>
-              <option value="gemini" className="bg-slate-900 text-slate-100 py-1.5">Google Gemini 1.5 Flash (via API Key)</option>
-              <option value="openai" className="bg-slate-900 text-slate-100 py-1.5">OpenAI Endpoint (gpt-4o-mini)</option>
+              <option value="openrouter" className="bg-slate-900 text-slate-100 py-1.5">OpenRouter</option>
+              <option value="nvidia" className="bg-slate-900 text-slate-100 py-1.5">NVIDIA NIM Cloud</option>
+              <option value="gemini" className="bg-slate-900 text-slate-100 py-1.5">Gemini API</option>
             </select>
           </div>
 
@@ -268,6 +284,7 @@ export function TaskControlPanel({
             <div className="flex items-center gap-2">
               <input
                 type="range"
+                disabled={isStreaming}
                 min="30"
                 max="400"
                 step="10"
@@ -285,6 +302,7 @@ export function TaskControlPanel({
             <input
               type="checkbox"
               id="graph-toggle"
+              disabled={isStreaming}
               checked={enumerateGraph}
               onChange={(e) => setEnumerateGraph(e.target.checked)}
               className="h-4 w-4 rounded border-cyan-500/50 bg-slate-950 text-cyan-500 focus:ring-cyan-400"
@@ -298,6 +316,7 @@ export function TaskControlPanel({
             <input
               type="checkbox"
               id="fault-toggle"
+              disabled={isStreaming}
               checked={forceFault}
               onChange={(e) => setForceFault(e.target.checked)}
               className="h-4 w-4 rounded border-amber-500/50 bg-slate-950 text-amber-500 focus:ring-amber-400"
