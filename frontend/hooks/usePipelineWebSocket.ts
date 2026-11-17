@@ -81,7 +81,6 @@ function normalizeGraphNode(n: any): GraphNode {
   return {
     id,
     node_id: id,
-    state_hash: n.state_hash || id,
     depth: typeof n.depth === "number" ? n.depth : 0,
     is_initial: Boolean(n.is_initial),
     is_goal: Boolean(n.is_goal),
