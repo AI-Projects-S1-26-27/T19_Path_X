@@ -3,7 +3,6 @@
 import React, { useState } from "react";
 import { Navbar, NavTab } from "../components/Navbar";
 import { TaskControlPanel } from "../components/TaskControlPanel";
-import { TabletopCanvas } from "../components/TabletopCanvas";
 import { SymbolicStateInspector } from "../components/SymbolicStateInspector";
 import { ExecutionStepper } from "../components/ExecutionStepper";
 import { StateSpaceExplorer } from "../components/StateSpaceExplorer";
@@ -101,7 +100,7 @@ export default function Home() {
             )}
 
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-              {/* Left Column: Input Panel & Simulation Canvas */}
+              {/* Left Column: Input Panel */}
               <div className="flex flex-col gap-6 lg:col-span-5">
                 <TaskControlPanel
                   onRun={runPipeline}
@@ -110,17 +109,9 @@ export default function Home() {
                   externalPrompt={currentPrompt}
                   externalDomainId={selectedDomain}
                 />
-                {selectedDomain === "blocks_world" || (selectedDomain === "auto" && (!state.domainId || state.domainId === "blocks_world")) ? (
-                  <TabletopCanvas
-                    entities={state.entities}
-                    initialFacts={state.initialFacts}
-                    finalPlan={state.finalPlan}
-                    isStreaming={isStreaming}
-                    prompt={currentPrompt}
-                  />
-                ) : (
+                {selectedDomain !== "blocks_world" && selectedDomain !== "auto" && (
                   <SymbolicStateInspector
-                    domainId={selectedDomain !== "auto" ? selectedDomain : (state.domainId || "blocks_world")}
+                    domainId={selectedDomain}
                     entities={state.entities}
                     initialFacts={state.initialFacts}
                     goalFacts={state.goalFacts}

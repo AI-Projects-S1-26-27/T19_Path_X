@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { GraphNode, GraphEdge, GraphStats, FactSchema } from "../types/pipeline";
 import { getApiBaseUrl } from "../utils/api";
 
@@ -55,9 +55,12 @@ export function StateSpaceExplorer({
 
   // Pan navigation with fixed ideal zoom ratio for optimal readability
   const FIXED_ZOOM = 0.9;
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 200, y: 40 });
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const hasUserPanned = useRef<boolean>(false);
 
   // Search Algorithm Simulation State
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<SearchAlgorithmType>("astar");
@@ -233,7 +236,7 @@ export function StateSpaceExplorer({
     }
   };
 
-  // Node position calculation: Stratified Hierarchical Layout
+  // Node position calculation: Stratified Hierarchical Layout centered symmetrically
   const nodePositions = useMemo(() => {
     const positions: Record<string, { x: number; y: number }> = {};
     if (currentNodes.length === 0) return positions;
@@ -251,22 +254,81 @@ export function StateSpaceExplorer({
     const ySpacing = 120;
     const minXSpacing = 110;
 
+    // Find the maximum node count across all depth levels to define a uniform layout width
+    let maxLevelCount = 1;
+    for (let d = 0; d <= maxDepth; d++) {
+      const count = (levels[d] || []).length;
+      if (count > maxLevelCount) maxLevelCount = count;
+    }
+    const layoutWidth = Math.max(800, (maxLevelCount + 1) * minXSpacing);
+
     for (let d = 0; d <= maxDepth; d++) {
       const nodesAtLevel = levels[d] || [];
       const count = nodesAtLevel.length;
-      const totalWidth = Math.max(800, (count + 1) * minXSpacing);
-      const step = totalWidth / (count + 1);
+      if (count === 0) continue;
+
+      const step = layoutWidth / (count + 1);
 
       nodesAtLevel.forEach((node, idx) => {
         positions[node.id] = {
           x: Math.round((idx + 1) * step),
-          y: Math.round(60 + d * ySpacing),
+          y: Math.round(70 + d * ySpacing),
         };
       });
     }
 
     return positions;
   }, [currentNodes]);
+
+  // Compute graph bounds and center
+  const graphBounds = useMemo(() => {
+    const nodeKeys = Object.keys(nodePositions);
+    if (nodeKeys.length === 0) {
+      return { minX: 0, maxX: 800, minY: 0, maxY: 600, centerX: 400, centerY: 300, width: 800, height: 600 };
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const key of nodeKeys) {
+      const pos = nodePositions[key];
+      if (pos.x < minX) minX = pos.x;
+      if (pos.x > maxX) maxX = pos.x;
+      if (pos.y < minY) minY = pos.y;
+      if (pos.y > maxY) maxY = pos.y;
+    }
+
+    return {
+      minX,
+      maxX,
+      minY,
+      maxY,
+      centerX: (minX + maxX) / 2,
+      centerY: (minY + maxY) / 2,
+      width: Math.max(10, maxX - minX),
+      height: Math.max(10, maxY - minY),
+    };
+  }, [nodePositions]);
+
+  // Centering pan calculation: positions the graph in the exact center of the SVG display
+  const getCenteredPan = useCallback(() => {
+    const el = svgRef.current || containerRef.current;
+    const viewW = el && el.clientWidth > 0 ? el.clientWidth : 850;
+    const viewH = el && el.clientHeight > 0 ? el.clientHeight : 580;
+
+    const targetX = Math.round(viewW / 2 - graphBounds.centerX * FIXED_ZOOM);
+    const scaledGraphH = graphBounds.height * FIXED_ZOOM;
+
+    let targetY: number;
+    if (scaledGraphH <= viewH - 140) {
+      targetY = Math.round(viewH / 2 - graphBounds.centerY * FIXED_ZOOM);
+    } else {
+      targetY = Math.round(65 - graphBounds.minY * FIXED_ZOOM);
+    }
+
+    return { x: targetX, y: targetY };
+  }, [graphBounds, FIXED_ZOOM]);
 
   // Helper to format any state ID into a clean friendly identifier (e.g., s0, s1, etc.)
   // and guarantee that no raw hexadecimal hash strings are ever rendered.
@@ -327,6 +389,7 @@ export function StateSpaceExplorer({
       return; // Clicking a node
     }
     setIsDragging(true);
+    hasUserPanned.current = true;
     dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
   };
 
@@ -344,6 +407,7 @@ export function StateSpaceExplorer({
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
+    hasUserPanned.current = true;
     // Scroll wheel pans the canvas smoothly instead of zooming
     setPan((prev) => ({
       x: prev.x - (e.shiftKey ? e.deltaY : e.deltaX),
@@ -352,8 +416,36 @@ export function StateSpaceExplorer({
   };
 
   const resetView = () => {
-    setPan({ x: 200, y: 40 });
+    hasUserPanned.current = false;
+    setPan(getCenteredPan());
   };
+
+  // Automatically center graph on initial load or when nodes change
+  useEffect(() => {
+    if (currentNodes.length > 0) {
+      hasUserPanned.current = false;
+      // Slight delay to allow DOM render & container clientWidth measurement
+      const timer = setTimeout(() => {
+        setPan(getCenteredPan());
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [currentNodes.length, getCenteredPan]);
+
+  // Maintain centered position on window or container resize unless user manually panned
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver(() => {
+      if (!hasUserPanned.current) {
+        setPan(getCenteredPan());
+      }
+    });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [getCenteredPan]);
 
   // ==========================================
   // SEARCH ALGORITHM SIMULATION ENGINE (Russell & Norvig Ch 3 & 4)
@@ -828,10 +920,10 @@ export function StateSpaceExplorer({
           <button
             type="button"
             onClick={resetView}
-            title="Reset Pan Position"
+            title="Center Graph in Display"
             className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition"
           >
-            Reset Pan
+            Center Graph
           </button>
           <span className="text-[11px] font-mono text-slate-400 border border-slate-800 bg-slate-900 px-2 py-1 rounded">
             Fixed View: 90%
@@ -1068,6 +1160,7 @@ export function StateSpaceExplorer({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 min-h-[580px]">
         {/* Interactive SVG Graph Canvas */}
         <div
+          ref={containerRef}
           className={`relative lg:col-span-8 flex flex-col rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden shadow-2xl select-none ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
@@ -1136,7 +1229,7 @@ export function StateSpaceExplorer({
           </div>
 
           {/* SVG Canvas */}
-          <svg className="w-full h-full flex-1 cursor-grab active:cursor-grabbing">
+          <svg ref={svgRef} className="w-full h-full flex-1 cursor-grab active:cursor-grabbing">
             <defs>
               <marker
                 id="arrowhead"

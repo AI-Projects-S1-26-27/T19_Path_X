@@ -39,8 +39,10 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
 
   const backtracks = state.backtrackCount || (state.decisionTrace?.backtracks ?? 0);
   const cascades = state.cascadeCount || (state.decisionTrace?.planner_cascades ?? 0);
-  const provider = state.providerUsed || state.decisionTrace?.final_provider || "Auto Cascade";
-  const algorithm = state.plannerAlgorithm || state.decisionTrace?.final_algorithm || "A*";
+  const provider = state.providerUsed || state.decisionTrace?.final_provider || "Auto-Select";
+  const isFastest = Boolean(state.isFastestSearchMode || state.requestedAlgorithm?.includes("Fastest"));
+  const isPlanFound = state.candidatePlan.length > 0;
+  const algorithm = state.plannerAlgorithm || state.requestedAlgorithm || state.decisionTrace?.final_algorithm || (isFastest ? "Fastest Optimized Search" : "Authoritative Search");
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-xl backdrop-blur-sm">
@@ -72,7 +74,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
             Provider: {provider}
           </span>
           <span className="rounded bg-indigo-900/60 px-2 py-0.5 text-indigo-200 border border-indigo-500/30">
-            Planner: {algorithm}
+            Planner: {isFastest ? (isPlanFound ? `${algorithm} (Fastest to Goal)` : "Fastest Optimized Search") : algorithm}
           </span>
           {backtracks > 0 ? (
             <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-300 border border-amber-500/40">
@@ -180,18 +182,58 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="font-semibold text-slate-200">
-                  2. Candidate Plan Search ({algorithm})
+                  2. Candidate Plan Search {isFastest ? (isPlanFound ? `(Fastest: ${algorithm})` : "(Fastest Optimized Search)") : `(${algorithm})`}
                 </span>
                 {state.searchTimeMs !== undefined && (
                   <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
                     ⚡ {state.searchTimeMs.toFixed(1)} ms
                   </span>
                 )}
+                {isFastest && (
+                  <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
+                    🏆 FASTEST OPTIMIZED SEARCH
+                  </span>
+                )}
               </div>
               <span className="font-mono text-[10px] text-slate-400">
-                {state.candidatePlan.length} Actions (Cost: {state.candidateCost})
+                {isPlanFound ? `${state.candidatePlan.length} Actions (Cost: ${state.candidateCost})` : "Searching..."}
               </span>
             </div>
+
+            {/* Explanation of best optimized search selected */}
+            {state.candidatePlan.length > 0 && state.isFastestSearchMode && (
+              <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-2.5 text-[11px] text-emerald-200">
+                <div className="flex flex-wrap items-center gap-1.5 font-semibold text-emerald-300 mb-1">
+                  <span>🏆 Best Optimized Search Selected:</span>
+                  <span className="font-mono font-bold text-white underline decoration-emerald-400">{algorithm}</span>
+                  <span className="text-slate-300 font-normal">
+                    &mdash; benchmarked as the fastest search to reach the final goal state ({state.searchTimeMs?.toFixed(1) ?? "0"} ms)
+                  </span>
+                </div>
+                {state.searchBenchmark && state.searchBenchmark.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                    <span className="text-[10px] text-slate-400 font-mono">Candidate Comparison:</span>
+                    {state.searchBenchmark.map((bench, idx) => (
+                      <span
+                        key={idx}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] border flex items-center gap-1 ${
+                          bench.is_winner
+                            ? "border-emerald-500/60 bg-emerald-900/50 text-emerald-300 font-bold"
+                            : bench.is_success
+                            ? "border-slate-800 bg-slate-900 text-slate-400"
+                            : "border-rose-900/40 bg-rose-950/20 text-rose-400/80"
+                        }`}
+                      >
+                        <span>{bench.algorithm}:</span>
+                        <span>{bench.duration_ms.toFixed(1)} ms</span>
+                        {bench.is_winner && <span>🏆 (Selected)</span>}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {state.candidatePlan.length > 0 && (
               <div className="mt-1.5 flex flex-wrap gap-1">
                 {state.candidatePlan.map((act, i) => (

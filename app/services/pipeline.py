@@ -514,63 +514,98 @@ class PipelineOrchestrator:
             best_validation = val_res
             best_provider_name = provider_name
 
-            # ─── Stage 3: PLAN (with cascade) ─────────────────────────
+            # ─── Stage 3: PLAN (with fastest search benchmark or cascade) ───────
+            is_fastest_mode = algorithm.lower() in ("auto", "fastest", "fastest_optimized", "fastest_optimal")
 
-            # Build planner cascade: start with requested algorithm, then add others
-            cascade = [algorithm]
-            for alt in PLANNER_CASCADE:
-                if alt.upper() != algorithm.upper() and alt not in cascade:
-                    cascade.append(alt)
+            if is_fastest_mode:
+                candidate_planners = ["A*", "BFS", "BEST_FIRST"]
+                successful_candidates = []
 
-            candidate = None
-            used_algorithm = algorithm
+                for algo_name in candidate_planners:
+                    t_start = time.perf_counter()
+                    try:
+                        p = get_planner_by_name(algo_name)
+                        plan_result = p.search(problem, active_domain)
+                        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
 
-            for planner_idx, algo_name in enumerate(cascade):
-                t2 = time.perf_counter()
-                try:
-                    planner = get_planner_by_name(algo_name)
-                    plan_result = planner.search(problem, active_domain)
-                    t_plan_ms = (time.perf_counter() - t2) * 1000.0
+                        if plan_result.is_success:
+                            successful_candidates.append((elapsed_ms, plan_result.total_cost, algo_name, plan_result))
+                    except Exception:
+                        pass
 
-                    if plan_result.is_success:
-                        candidate = plan_result
-                        used_algorithm = algo_name
-                        trace.stage_trace.append(StageAttemptRecord(
-                            stage="PLAN",
-                            attempt=planner_idx + 1,
-                            status=PipelineStageStatus.SUCCESS,
-                            provider_used=algo_name,
-                            duration_ms=t_plan_ms,
-                            recovery_action="planner_cascade" if planner_idx > 0 else None,
-                            details={"nodes_expanded": plan_result.nodes_expanded, "actions": len(plan_result.actions)},
-                        ))
-                        if planner_idx > 0:
-                            trace.planner_cascades += 1
-                            trace.recovery_path.append(f"planner_cascade_{algo_name}")
-                        break
+                if successful_candidates:
+                    successful_candidates.sort(key=lambda x: (x[0], x[1]))
+                    best_time, best_cost, best_algo, best_res = successful_candidates[0]
+                    candidate = best_res
+                    used_algorithm = best_algo
+                    t_plan_ms = best_time
+                    trace.stage_trace.append(StageAttemptRecord(
+                        stage="PLAN",
+                        attempt=1,
+                        status=PipelineStageStatus.SUCCESS,
+                        provider_used=f"{used_algorithm} (Fastest to Goal)",
+                        duration_ms=t_plan_ms,
+                        recovery_action=None,
+                        details={"nodes_expanded": best_res.nodes_expanded, "actions": len(best_res.actions)},
+                    ))
+                else:
+                    candidate = None
+                    used_algorithm = "A*"
+                    t_plan_ms = 0.0
+            else:
+                cascade = [algorithm]
+                for alt in PLANNER_CASCADE:
+                    if alt.upper() != algorithm.upper() and alt not in cascade:
+                        cascade.append(alt)
 
-                    else:
+                candidate = None
+                used_algorithm = algorithm
+
+                for planner_idx, algo_name in enumerate(cascade):
+                    t2 = time.perf_counter()
+                    try:
+                        planner = get_planner_by_name(algo_name)
+                        plan_result = planner.search(problem, active_domain)
+                        t_plan_ms = (time.perf_counter() - t2) * 1000.0
+
+                        if plan_result.is_success:
+                            candidate = plan_result
+                            used_algorithm = algo_name
+                            trace.stage_trace.append(StageAttemptRecord(
+                                stage="PLAN",
+                                attempt=planner_idx + 1,
+                                status=PipelineStageStatus.SUCCESS,
+                                provider_used=algo_name,
+                                duration_ms=t_plan_ms,
+                                recovery_action="planner_cascade" if planner_idx > 0 else None,
+                                details={"nodes_expanded": plan_result.nodes_expanded, "actions": len(plan_result.actions)},
+                            ))
+                            if planner_idx > 0:
+                                trace.planner_cascades += 1
+                                trace.recovery_path.append(f"planner_cascade_{algo_name}")
+                            break
+
+                        else:
+                            trace.stage_trace.append(StageAttemptRecord(
+                                stage="PLAN",
+                                attempt=planner_idx + 1,
+                                status=PipelineStageStatus.FAILED,
+                                provider_used=algo_name,
+                                duration_ms=t_plan_ms,
+                                error=plan_result.failure_reason,
+                                recovery_action="planner_cascade" if planner_idx < len(cascade) - 1 else "backtrack",
+                            ))
+                    except Exception as e:
+                        t_plan_ms = (time.perf_counter() - t2) * 1000.0
                         trace.stage_trace.append(StageAttemptRecord(
                             stage="PLAN",
                             attempt=planner_idx + 1,
                             status=PipelineStageStatus.FAILED,
                             provider_used=algo_name,
                             duration_ms=t_plan_ms,
-                            error=plan_result.failure_reason,
-                            recovery_action="planner_cascade" if planner_idx < len(cascade) - 1 else "backtrack",
+                            error=str(e),
                         ))
-
-                except Exception as e:
-                    t_plan_ms = (time.perf_counter() - t2) * 1000.0
-                    trace.stage_trace.append(StageAttemptRecord(
-                        stage="PLAN",
-                        attempt=planner_idx + 1,
-                        status=PipelineStageStatus.FAILED,
-                        provider_used=algo_name,
-                        duration_ms=t_plan_ms,
-                        error=str(e),
-                    ))
-                    logger.warning(f"Planner {algo_name} failed: {e}")
+                        logger.warning(f"Planner {algo_name} failed: {e}")
 
             if candidate is None:
                 # All planners failed — backtrack to re-interpretation
