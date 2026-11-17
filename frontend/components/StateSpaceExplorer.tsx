@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { GraphNode, GraphEdge, GraphStats, FactSchema } from "../types/pipeline";
 import { getApiBaseUrl } from "../utils/api";
 
@@ -53,11 +53,14 @@ export function StateSpaceExplorer({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
 
-  // Pan and Zoom
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 200, y: 40 });
-  const [zoom, setZoom] = useState<number>(0.85);
+  // Pan navigation with fixed ideal zoom ratio for optimal readability
+  const FIXED_ZOOM = 0.9;
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+  const hasUserPanned = useRef<boolean>(false);
 
   // Search Algorithm Simulation State
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<SearchAlgorithmType>("astar");
@@ -67,10 +70,64 @@ export function StateSpaceExplorer({
 
   // Use stream data if active and present, otherwise standalone
   const hasStreamData = streamedNodes.length > 0;
-  const currentNodes = (activeSource === "stream" && hasStreamData) ? streamedNodes : standaloneNodes;
-  const currentEdges = (activeSource === "stream" && hasStreamData) ? streamedEdges : standaloneEdges;
+  const rawNodes = (activeSource === "stream" && hasStreamData) ? streamedNodes : standaloneNodes;
+  const rawEdges = (activeSource === "stream" && hasStreamData) ? streamedEdges : standaloneEdges;
   const currentStats = (activeSource === "stream" && hasStreamData) ? streamedStats : standaloneStats;
   const currentStatus = (activeSource === "stream" && hasStreamData) ? streamedStatus : (isLoading ? "ENUMERATING" : (standaloneStats ? (standaloneStats.is_complete ? "COMPLETED" : "TRUNCATED") : "IDLE"));
+
+  // Unified Canonical State Normalization:
+  // Guarantees that whether nodes and edges originate from WebSocket streaming (Mission Control)
+  // or standalone REST enumeration, ALL state IDs are mapped to clean, human-readable labels:
+  // s0 (Initial State), s1, s2, s3, etc. Zero hashes will ever appear in the UI.
+  const { currentNodes, currentEdges } = useMemo(() => {
+    if (rawNodes.length === 0) {
+      return { currentNodes: [], currentEdges: [] };
+    }
+
+    // Sort: Initial state is guaranteed to be index 0 (s0), then by depth
+    const sorted = [...rawNodes].sort((a, b) => {
+      if (a.is_initial && !b.is_initial) return -1;
+      if (!a.is_initial && b.is_initial) return 1;
+      return (a.depth ?? 0) - (b.depth ?? 0);
+    });
+
+    // Create bidirectional ID lookup table
+    const idMap = new Map<string, string>();
+    sorted.forEach((node, idx) => {
+      const cleanId = `s${idx}`;
+      idMap.set(node.id, cleanId);
+      if ((node as any).node_id) idMap.set((node as any).node_id, cleanId);
+      if (node.state_hash) idMap.set(node.state_hash, cleanId);
+      if (node.id.startsWith("state_")) {
+        idMap.set(node.id.replace("state_", ""), cleanId);
+      }
+    });
+
+    const normalizedNodes: GraphNode[] = sorted.map((node, idx) => {
+      const cleanId = idMap.get(node.id) || `s${idx}`;
+      return {
+        ...node,
+        id: cleanId,
+        node_id: cleanId,
+      };
+    });
+
+    const normalizedEdges: GraphEdge[] = rawEdges.map((edge) => {
+      const srcRaw = edge.source || (edge as any).source_id || "";
+      const tgtRaw = edge.target || (edge as any).target_id || "";
+      const srcClean = idMap.get(srcRaw) || (srcRaw.startsWith("state_") ? idMap.get(srcRaw.replace("state_", "")) : undefined) || srcRaw.replace("state_", "s");
+      const tgtClean = idMap.get(tgtRaw) || (tgtRaw.startsWith("state_") ? idMap.get(tgtRaw.replace("state_", "")) : undefined) || tgtRaw.replace("state_", "s");
+      return {
+        ...edge,
+        source: srcClean,
+        source_id: srcClean,
+        target: tgtClean,
+        target_id: tgtClean,
+      };
+    });
+
+    return { currentNodes: normalizedNodes, currentEdges: normalizedEdges };
+  }, [rawNodes, rawEdges]);
 
   // Automatically switch to stream source if live nodes arrive
   useEffect(() => {
@@ -103,24 +160,40 @@ export function StateSpaceExplorer({
       const cytoscape = await resp.json();
       const rawElements: Array<{ data: any }> = cytoscape.elements || [];
 
+      const nodeElements = rawElements.filter((el) => !el.data.source && !el.data.target);
+      nodeElements.sort((a, b) => {
+        if (a.data.is_initial && !b.data.is_initial) return -1;
+        if (!a.data.is_initial && b.data.is_initial) return 1;
+        return (a.data.depth ?? 0) - (b.data.depth ?? 0);
+      });
+
+      const idMap: Record<string, string> = {};
+      nodeElements.forEach((el, idx) => {
+        const rawId = String(el.data.id || el.data.node_id);
+        idMap[rawId] = `s${idx}`;
+      });
+
       const parsedNodes: GraphNode[] = [];
       const parsedEdges: GraphEdge[] = [];
 
       for (const el of rawElements) {
         const d = el.data;
         if (d.source && d.target) {
+          const srcId = idMap[String(d.source)] || String(d.source).replace("state_", "s");
+          const tgtId = idMap[String(d.target)] || String(d.target).replace("state_", "s");
           parsedEdges.push({
-            source: String(d.source),
-            target: String(d.target),
+            source: srcId,
+            target: tgtId,
             action_name: d.label || d.action || "action",
             action_args: [],
             cost: d.cost ?? 1,
             is_cycle: Boolean(d.is_cycle),
           });
         } else {
+          const rawId = String(d.id || d.node_id);
+          const cleanId = idMap[rawId] || rawId.replace("state_", "s");
           parsedNodes.push({
-            id: String(d.id),
-            state_hash: d.state_hash || String(d.id),
+            id: cleanId,
             depth: d.depth ?? 0,
             is_initial: Boolean(d.is_initial),
             is_goal: Boolean(d.is_goal),
@@ -163,7 +236,7 @@ export function StateSpaceExplorer({
     }
   };
 
-  // Node position calculation: Stratified Hierarchical Layout
+  // Node position calculation: Stratified Hierarchical Layout centered symmetrically
   const nodePositions = useMemo(() => {
     const positions: Record<string, { x: number; y: number }> = {};
     if (currentNodes.length === 0) return positions;
@@ -181,22 +254,98 @@ export function StateSpaceExplorer({
     const ySpacing = 120;
     const minXSpacing = 110;
 
+    // Find the maximum node count across all depth levels to define a uniform layout width
+    let maxLevelCount = 1;
+    for (let d = 0; d <= maxDepth; d++) {
+      const count = (levels[d] || []).length;
+      if (count > maxLevelCount) maxLevelCount = count;
+    }
+    const layoutWidth = Math.max(800, (maxLevelCount + 1) * minXSpacing);
+
     for (let d = 0; d <= maxDepth; d++) {
       const nodesAtLevel = levels[d] || [];
       const count = nodesAtLevel.length;
-      const totalWidth = Math.max(800, (count + 1) * minXSpacing);
-      const step = totalWidth / (count + 1);
+      if (count === 0) continue;
+
+      const step = layoutWidth / (count + 1);
 
       nodesAtLevel.forEach((node, idx) => {
         positions[node.id] = {
           x: Math.round((idx + 1) * step),
-          y: Math.round(60 + d * ySpacing),
+          y: Math.round(70 + d * ySpacing),
         };
       });
     }
 
     return positions;
   }, [currentNodes]);
+
+  // Compute graph bounds and center
+  const graphBounds = useMemo(() => {
+    const nodeKeys = Object.keys(nodePositions);
+    if (nodeKeys.length === 0) {
+      return { minX: 0, maxX: 800, minY: 0, maxY: 600, centerX: 400, centerY: 300, width: 800, height: 600 };
+    }
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const key of nodeKeys) {
+      const pos = nodePositions[key];
+      if (pos.x < minX) minX = pos.x;
+      if (pos.x > maxX) maxX = pos.x;
+      if (pos.y < minY) minY = pos.y;
+      if (pos.y > maxY) maxY = pos.y;
+    }
+
+    return {
+      minX,
+      maxX,
+      minY,
+      maxY,
+      centerX: (minX + maxX) / 2,
+      centerY: (minY + maxY) / 2,
+      width: Math.max(10, maxX - minX),
+      height: Math.max(10, maxY - minY),
+    };
+  }, [nodePositions]);
+
+  // Centering pan calculation: positions the graph in the exact center of the SVG display
+  const getCenteredPan = useCallback(() => {
+    const el = svgRef.current || containerRef.current;
+    const viewW = el && el.clientWidth > 0 ? el.clientWidth : 850;
+    const viewH = el && el.clientHeight > 0 ? el.clientHeight : 580;
+
+    const targetX = Math.round(viewW / 2 - graphBounds.centerX * FIXED_ZOOM);
+    const scaledGraphH = graphBounds.height * FIXED_ZOOM;
+
+    let targetY: number;
+    if (scaledGraphH <= viewH - 140) {
+      targetY = Math.round(viewH / 2 - graphBounds.centerY * FIXED_ZOOM);
+    } else {
+      targetY = Math.round(65 - graphBounds.minY * FIXED_ZOOM);
+    }
+
+    return { x: targetX, y: targetY };
+  }, [graphBounds, FIXED_ZOOM]);
+
+  // Helper to format any state ID into a clean friendly identifier (e.g., s0, s1, etc.)
+  // and guarantee that no raw hexadecimal hash strings are ever rendered.
+  const formatStateId = (id: string | null | undefined): string => {
+    if (!id) return "";
+    if (/^s\d+$/i.test(id)) return id.toLowerCase();
+    const clean = id.replace(/^(state_|node_|s_)/i, "");
+    if (/^\d+$/.test(clean)) return `s${clean}`;
+    const idx = currentNodes.findIndex((n) => n.id === id || n.id === clean || (n as any).node_id === id);
+    if (idx >= 0) return `s${idx}`;
+    if (clean.length > 6) {
+      let hash = 0;
+      for (let i = 0; i < clean.length; i++) hash = (hash * 31 + clean.charCodeAt(i)) >>> 0;
+      return `s${hash % 30}`;
+    }
+    return `s${clean}`;
+  };
 
   // Selected node details
   const selectedNode = useMemo(() => {
@@ -223,11 +372,10 @@ export function StateSpaceExplorer({
 
       if (query) {
         const matchesId = node.id.toLowerCase().includes(query);
-        const matchesHash = Boolean(node.state_hash && node.state_hash.toLowerCase().includes(query));
         const matchesFacts = (node.facts_summary || []).some((f) =>
           f.toLowerCase().includes(query)
         );
-        if (!matchesId && !matchesHash && !matchesFacts) continue;
+        if (!matchesId && !matchesFacts) continue;
       }
 
       ids.add(node.id);
@@ -241,6 +389,7 @@ export function StateSpaceExplorer({
       return; // Clicking a node
     }
     setIsDragging(true);
+    hasUserPanned.current = true;
     dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
   };
 
@@ -258,14 +407,45 @@ export function StateSpaceExplorer({
 
   const handleWheel = (e: React.WheelEvent) => {
     e.preventDefault();
-    const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-    setZoom((prev) => Math.min(2.5, Math.max(0.2, prev * zoomFactor)));
+    hasUserPanned.current = true;
+    // Scroll wheel pans the canvas smoothly instead of zooming
+    setPan((prev) => ({
+      x: prev.x - (e.shiftKey ? e.deltaY : e.deltaX),
+      y: prev.y - (e.shiftKey ? 0 : e.deltaY),
+    }));
   };
 
   const resetView = () => {
-    setPan({ x: 200, y: 40 });
-    setZoom(0.85);
+    hasUserPanned.current = false;
+    setPan(getCenteredPan());
   };
+
+  // Automatically center graph on initial load or when nodes change
+  useEffect(() => {
+    if (currentNodes.length > 0) {
+      hasUserPanned.current = false;
+      // Slight delay to allow DOM render & container clientWidth measurement
+      const timer = setTimeout(() => {
+        setPan(getCenteredPan());
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [currentNodes.length, getCenteredPan]);
+
+  // Maintain centered position on window or container resize unless user manually panned
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver(() => {
+      if (!hasUserPanned.current) {
+        setPan(getCenteredPan());
+      }
+    });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [getCenteredPan]);
 
   // ==========================================
   // SEARCH ALGORITHM SIMULATION ENGINE (Russell & Norvig Ch 3 & 4)
@@ -377,8 +557,8 @@ export function StateSpaceExplorer({
         g: 0,
         h: startH,
         f: startH,
-        explanation: `A* initialized at initial state ${startNode.id}. Evaluation: g=0, h=${startH}, f(n)=g+h=${startH}. Placed in Open Set (Frontier).`,
-        queueSnapshot: [{ id: startNode.id, g: 0, h: startH, f: startH }],
+        explanation: `A* initialized at initial state ${formatStateId(startNode.id)}. Evaluation: g=0, h=${startH}, f(n)=g+h=${startH}. Placed in Open Set (Frontier).`,
+        queueSnapshot: [{ id: formatStateId(startNode.id), g: 0, h: startH, f: startH }],
       });
 
       let stepCounter = 1;
@@ -400,16 +580,16 @@ export function StateSpaceExplorer({
           const { pathNodes, pathEdges } = buildPath(parentMap, bestItem.id);
           steps.push({
             stepIndex: stepCounter,
-            currentNodeId: bestItem.id,
-            frontierNodeIds: Array.from(openSet.keys()),
-            closedNodeIds: Array.from(closedSet),
-            solutionPathNodeIds: pathNodes,
+            currentNodeId: formatStateId(bestItem.id),
+            frontierNodeIds: Array.from(openSet.keys()).map((k) => formatStateId(k)),
+            closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
+            solutionPathNodeIds: pathNodes.map((k) => formatStateId(k)),
             solutionEdgeKeys: pathEdges,
             g: bestItem.g,
             h: 0,
             f: bestItem.g,
-            explanation: `Goal satisfied at ${bestItem.id}! A* achieved optimality with path cost g=${bestItem.g} across ${pathNodes.length} states. Zero heuristic remaining (h=0).`,
-            queueSnapshot: Array.from(openSet.values()),
+            explanation: `Goal satisfied at ${formatStateId(bestItem.id)}! A* achieved optimality with path cost g=${bestItem.g} across ${pathNodes.length} states. Zero heuristic remaining (h=0).`,
+            queueSnapshot: Array.from(openSet.values()).map((v) => ({ ...v, id: formatStateId(v.id) })),
           });
           break;
         }
@@ -437,16 +617,16 @@ export function StateSpaceExplorer({
 
         steps.push({
           stepIndex: stepCounter++,
-          currentNodeId: bestItem.id,
-          frontierNodeIds: Array.from(openSet.keys()),
-          closedNodeIds: Array.from(closedSet),
+          currentNodeId: formatStateId(bestItem.id),
+          frontierNodeIds: Array.from(openSet.keys()).map((k) => formatStateId(k)),
+          closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
           solutionPathNodeIds: [],
           solutionEdgeKeys: new Set(),
           g: bestItem.g,
           h: bestItem.h,
           f: bestItem.f,
-          explanation: `A* expanded ${bestItem.id} (f=${bestItem.f} = g:${bestItem.g} + h:${bestItem.h}). Moved to Closed Set; generated ${addedCount} successor(s) in Frontier.`,
-          queueSnapshot: Array.from(openSet.values()).sort((a, b) => a.f - b.f),
+          explanation: `A* expanded ${formatStateId(bestItem.id)} (f=${bestItem.f} = g:${bestItem.g} + h:${bestItem.h}). Moved to Closed Set; generated ${addedCount} successor(s) in Frontier.`,
+          queueSnapshot: Array.from(openSet.values()).map((v) => ({ ...v, id: formatStateId(v.id) })).sort((a, b) => a.f - b.f),
         });
       }
     } else if (selectedAlgorithm === "bfs") {
@@ -459,16 +639,16 @@ export function StateSpaceExplorer({
 
       steps.push({
         stepIndex: 0,
-        currentNodeId: startNode.id,
-        frontierNodeIds: [startNode.id],
+        currentNodeId: formatStateId(startNode.id),
+        frontierNodeIds: [formatStateId(startNode.id)],
         closedNodeIds: [],
         solutionPathNodeIds: [],
         solutionEdgeKeys: new Set(),
         g: 0,
         h: heuristicDistances[startNode.id] ?? 0,
         f: 0,
-        explanation: `BFS initialized with start node ${startNode.id} at depth 0 into FIFO Queue.`,
-        queueSnapshot: [{ id: startNode.id, g: 0, h: heuristicDistances[startNode.id] ?? 0, f: 0 }],
+        explanation: `BFS initialized with start node ${formatStateId(startNode.id)} at depth 0 into FIFO Queue.`,
+        queueSnapshot: [{ id: formatStateId(startNode.id), g: 0, h: heuristicDistances[startNode.id] ?? 0, f: 0 }],
       });
 
       let stepCounter = 1;
@@ -481,16 +661,16 @@ export function StateSpaceExplorer({
           const { pathNodes, pathEdges } = buildPath(parentMap, curr);
           steps.push({
             stepIndex: stepCounter,
-            currentNodeId: curr,
-            frontierNodeIds: [...queue],
-            closedNodeIds: Array.from(closedSet),
-            solutionPathNodeIds: pathNodes,
+            currentNodeId: formatStateId(curr),
+            frontierNodeIds: queue.map((k) => formatStateId(k)),
+            closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
+            solutionPathNodeIds: pathNodes.map((k) => formatStateId(k)),
             solutionEdgeKeys: pathEdges,
             g: currDepth,
             h: 0,
             f: currDepth,
-            explanation: `BFS reached goal node ${curr} at depth ${currDepth}. Optimal step count guaranteed for uniform edge costs.`,
-            queueSnapshot: queue.map((id) => ({ id, g: depthMap[id] ?? 0, h: heuristicDistances[id] ?? 0, f: depthMap[id] ?? 0 })),
+            explanation: `BFS reached goal node ${formatStateId(curr)} at depth ${currDepth}. Optimal step count guaranteed for uniform edge costs.`,
+            queueSnapshot: queue.map((id) => ({ id: formatStateId(id), g: depthMap[id] ?? 0, h: heuristicDistances[id] ?? 0, f: depthMap[id] ?? 0 })),
           });
           break;
         }
@@ -509,16 +689,16 @@ export function StateSpaceExplorer({
 
         steps.push({
           stepIndex: stepCounter++,
-          currentNodeId: curr,
-          frontierNodeIds: [...queue],
-          closedNodeIds: Array.from(closedSet),
+          currentNodeId: formatStateId(curr),
+          frontierNodeIds: queue.map((k) => formatStateId(k)),
+          closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
           solutionPathNodeIds: [],
           solutionEdgeKeys: new Set(),
           g: currDepth,
           h: heuristicDistances[curr] ?? 0,
           f: currDepth,
-          explanation: `BFS popped ${curr} from FIFO queue at depth ${currDepth}. Enqueued ${addedCount} unvisited successor(s).`,
-          queueSnapshot: queue.map((id) => ({ id, g: depthMap[id] ?? 0, h: heuristicDistances[id] ?? 0, f: depthMap[id] ?? 0 })),
+          explanation: `BFS popped ${formatStateId(curr)} from FIFO queue at depth ${currDepth}. Enqueued ${addedCount} unvisited successor(s).`,
+          queueSnapshot: queue.map((id) => ({ id: formatStateId(id), g: depthMap[id] ?? 0, h: heuristicDistances[id] ?? 0, f: depthMap[id] ?? 0 })),
         });
       }
     } else {
@@ -538,16 +718,16 @@ export function StateSpaceExplorer({
 
       steps.push({
         stepIndex: 0,
-        currentNodeId: startNode.id,
-        frontierNodeIds: [startNode.id],
+        currentNodeId: formatStateId(startNode.id),
+        frontierNodeIds: [formatStateId(startNode.id)],
         closedNodeIds: [],
         solutionPathNodeIds: [],
         solutionEdgeKeys: new Set(),
         g: 0,
         h: startH,
         f: startH,
-        explanation: `Greedy Best-First Search initialized at ${startNode.id}. Guided solely by heuristic estimate h(n)=${startH}.`,
-        queueSnapshot: [{ id: startNode.id, g: 0, h: startH, f: startH }],
+        explanation: `Greedy Best-First Search initialized at ${formatStateId(startNode.id)}. Guided solely by heuristic estimate h(n)=${startH}.`,
+        queueSnapshot: [{ id: formatStateId(startNode.id), g: 0, h: startH, f: startH }],
       });
 
       let stepCounter = 1;
@@ -567,16 +747,16 @@ export function StateSpaceExplorer({
           const { pathNodes, pathEdges } = buildPath(parentMap, bestItem.id);
           steps.push({
             stepIndex: stepCounter,
-            currentNodeId: bestItem.id,
-            frontierNodeIds: Array.from(openSet.keys()),
-            closedNodeIds: Array.from(closedSet),
-            solutionPathNodeIds: pathNodes,
+            currentNodeId: formatStateId(bestItem.id),
+            frontierNodeIds: Array.from(openSet.keys()).map((k) => formatStateId(k)),
+            closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
+            solutionPathNodeIds: pathNodes.map((k) => formatStateId(k)),
             solutionEdgeKeys: pathEdges,
             g: bestItem.g,
             h: 0,
             f: 0,
-            explanation: `Greedy Best-First reached goal ${bestItem.id} with h=0! Path found quickly, though not necessarily cost-minimal.`,
-            queueSnapshot: Array.from(openSet.values()),
+            explanation: `Greedy Best-First reached goal ${formatStateId(bestItem.id)} with h=0! Path found quickly, though not necessarily cost-minimal.`,
+            queueSnapshot: Array.from(openSet.values()).map((v) => ({ ...v, id: formatStateId(v.id) })),
           });
           break;
         }
@@ -600,16 +780,16 @@ export function StateSpaceExplorer({
 
         steps.push({
           stepIndex: stepCounter++,
-          currentNodeId: bestItem.id,
-          frontierNodeIds: Array.from(openSet.keys()),
-          closedNodeIds: Array.from(closedSet),
+          currentNodeId: formatStateId(bestItem.id),
+          frontierNodeIds: Array.from(openSet.keys()).map((k) => formatStateId(k)),
+          closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
           solutionPathNodeIds: [],
           solutionEdgeKeys: new Set(),
           g: bestItem.g,
           h: bestItem.h,
           f: bestItem.h,
-          explanation: `Greedy Best-First expanded ${bestItem.id} with lowest h(n)=${bestItem.h}. Ignoring historical path cost g(n).`,
-          queueSnapshot: Array.from(openSet.values()).sort((a, b) => a.h - b.h),
+          explanation: `Greedy Best-First expanded ${formatStateId(bestItem.id)} with lowest h(n)=${bestItem.h}. Ignoring historical path cost g(n).`,
+          queueSnapshot: Array.from(openSet.values()).map((v) => ({ ...v, id: formatStateId(v.id) })).sort((a, b) => a.h - b.h),
         });
       }
     }
@@ -735,34 +915,18 @@ export function StateSpaceExplorer({
           )}
         </div>
 
-        {/* View Controls */}
+        {/* View Controls: Pan Only with Fixed Optimal Visibility Zoom */}
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setZoom((z) => Math.min(2.5, z * 1.2))}
-            title="Zoom In"
-            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-          >
-            +
-          </button>
-          <button
-            type="button"
-            onClick={() => setZoom((z) => Math.max(0.2, z * 0.8))}
-            title="Zoom Out"
-            className="rounded border border-slate-700 bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
-          >
-            -
-          </button>
-          <button
-            type="button"
             onClick={resetView}
-            title="Reset Pan and Zoom"
-            className="rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-300 hover:bg-slate-700"
+            title="Center Graph in Display"
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-300 hover:bg-slate-700 transition"
           >
-            Reset
+            Center Graph
           </button>
-          <span className="text-[11px] font-mono text-slate-400">
-            {Math.round(zoom * 100)}%
+          <span className="text-[11px] font-mono text-slate-400 border border-slate-800 bg-slate-900 px-2 py-1 rounded">
+            Fixed View: 90%
           </span>
         </div>
       </div>
@@ -894,7 +1058,7 @@ export function StateSpaceExplorer({
           {activeSimStep && (
             <div className="flex items-center gap-3 text-xs">
               <span className="font-mono text-slate-300">
-                Focus: <strong className="text-cyan-400">{activeSimStep.currentNodeId}</strong>
+                Focus: <strong className="text-cyan-400">{formatStateId(activeSimStep.currentNodeId)}</strong>
               </span>
               <span className="font-mono text-slate-400">
                 g(n)=<strong className="text-indigo-300">{activeSimStep.g}</strong>
@@ -916,7 +1080,7 @@ export function StateSpaceExplorer({
         {activeSimStep && (
           <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-2.5 text-xs text-cyan-200/90 leading-relaxed">
             <span className="font-bold text-cyan-300 mr-1.5">🎓 Search Concept:</span>
-            {activeSimStep.explanation}
+            {activeSimStep.explanation.replace(/\b[0-9a-fA-F]{8,64}\b/g, (h) => formatStateId(h))}
           </div>
         )}
       </div>
@@ -996,7 +1160,8 @@ export function StateSpaceExplorer({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12 min-h-[580px]">
         {/* Interactive SVG Graph Canvas */}
         <div
-          className="relative lg:col-span-8 flex flex-col rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden shadow-2xl select-none"
+          ref={containerRef}
+          className={`relative lg:col-span-8 flex flex-col rounded-2xl border border-slate-800 bg-slate-950 overflow-hidden shadow-2xl select-none ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
@@ -1064,7 +1229,7 @@ export function StateSpaceExplorer({
           </div>
 
           {/* SVG Canvas */}
-          <svg className="w-full h-full flex-1 cursor-grab active:cursor-grabbing">
+          <svg ref={svgRef} className="w-full h-full flex-1 cursor-grab active:cursor-grabbing">
             <defs>
               <marker
                 id="arrowhead"
@@ -1098,7 +1263,7 @@ export function StateSpaceExplorer({
               </marker>
             </defs>
 
-            <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+            <g transform={`translate(${pan.x}, ${pan.y}) scale(${FIXED_ZOOM})`}>
               {/* Edges */}
               {currentEdges.map((edge, idx) => {
                 const s = nodePositions[edge.source];
@@ -1316,7 +1481,7 @@ export function StateSpaceExplorer({
             </h3>
             {selectedNode && (
               <span className="font-mono text-xs rounded bg-slate-800 px-2 py-0.5 text-slate-300">
-                {selectedNode.id}
+                {formatStateId(selectedNode.id)}
               </span>
             )}
           </div>
@@ -1404,7 +1569,7 @@ export function StateSpaceExplorer({
                           <line x1={40} y1={y} x2={130} y2={48} stroke="#0ea5e9" strokeWidth={1.5} markerEnd="url(#arrowhead)" />
                           <circle cx={40} cy={y} r={8} fill="#0369a1" stroke="#38bdf8" strokeWidth={1} />
                           <text x={40} y={y + 3} textAnchor="middle" fontSize={8} fill="#fff" fontFamily="monospace">
-                            {e.source.replace("state_", "s")}
+                            {formatStateId(e.source)}
                           </text>
                         </g>
                       );
@@ -1413,7 +1578,7 @@ export function StateSpaceExplorer({
                     {/* Central selected node */}
                     <circle cx={145} cy={48} r={14} fill="#0284c7" stroke="#ffffff" strokeWidth={2.5} className="filter drop-shadow-md" />
                     <text x={145} y={52} textAnchor="middle" fontSize={9} fill="#fff" fontWeight="bold" fontFamily="monospace">
-                      {selectedNode.id.replace("state_", "s")}
+                      {formatStateId(selectedNode.id)}
                     </text>
 
                     {/* Outgoing links */}
@@ -1424,23 +1589,13 @@ export function StateSpaceExplorer({
                           <line x1={160} y1={48} x2={250} y2={y} stroke="#6366f1" strokeWidth={1.5} markerEnd="url(#arrowhead)" />
                           <circle cx={250} cy={y} r={8} fill="#4338ca" stroke="#818cf8" strokeWidth={1} />
                           <text x={250} y={y + 3} textAnchor="middle" fontSize={8} fill="#fff" fontFamily="monospace">
-                            {e.target.replace("state_", "s")}
+                            {formatStateId(e.target)}
                           </text>
                         </g>
                       );
                     })}
                   </svg>
                 </div>
-              </div>
-
-              {/* State SHA-256 Hash */}
-              <div className="rounded-lg border border-slate-800 bg-slate-950 p-2.5">
-                <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
-                  Canonical SHA-256 Hash
-                </span>
-                <span className="font-mono text-[11px] text-cyan-300 break-all select-all">
-                  {selectedNode.state_hash || selectedNode.id}
-                </span>
               </div>
 
               {/* Active Symbolic Facts */}
@@ -1481,7 +1636,7 @@ export function StateSpaceExplorer({
                           {e.action_name}
                         </span>
                         <span className="font-mono text-[10px] text-slate-500">
-                          from {e.source}
+                          from {formatStateId(e.source)}
                         </span>
                       </div>
                     ))
@@ -1510,7 +1665,7 @@ export function StateSpaceExplorer({
                           {e.action_name}
                         </span>
                         <span className="font-mono text-[10px] text-slate-500">
-                          to {e.target} {e.is_cycle && "(cycle)"}
+                          to {formatStateId(e.target)} {e.is_cycle && "(cycle)"}
                         </span>
                       </div>
                     ))

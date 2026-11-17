@@ -88,7 +88,7 @@ export function TaskControlPanel({
 }: TaskControlPanelProps) {
   const [prompt, setPrompt] = useState(PRESETS[0].prompt);
   const [domainId, setDomainId] = useState<string>("auto");
-  const [algorithm, setAlgorithm] = useState("A*");
+  const [algorithm, setAlgorithm] = useState("fastest");
   const [forceFault, setForceFault] = useState(false);
   const [enumerateGraph, setEnumerateGraph] = useState(true);
   const [maxNodes, setMaxNodes] = useState(150);
@@ -227,6 +227,7 @@ export function TaskControlPanel({
               style={{ colorScheme: "dark" }}
               className="w-full rounded-xl border border-slate-700 bg-slate-900 p-2.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
             >
+              <option value="fastest" className="bg-slate-900 text-slate-100 py-1.5">Fastest Optimized Search</option>
               <option value="A*" className="bg-slate-900 text-slate-100 py-1.5">A* Search (Optimal Uniform-Cost / Admissible)</option>
               <option value="BFS" className="bg-slate-900 text-slate-100 py-1.5">Breadth-First Search (BFS)</option>
               <option value="BEST_FIRST" className="bg-slate-900 text-slate-100 py-1.5">Greedy Best-First Search</option>

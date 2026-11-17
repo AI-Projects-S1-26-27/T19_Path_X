@@ -37,7 +37,7 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
     try:
         req = await websocket.receive_json()
         prompt = req.get("prompt", "Move the red box next to the blue box. Do not move the glass.")
-        algorithm = req.get("algorithm", "A*")
+        algorithm = req.get("algorithm", "fastest")
         force_fault = bool(req.get("force_fault", False))
         provider_type = req.get("provider_type", "mock")
         llm_model = req.get("llm_model", "gemma2:2b")
@@ -286,60 +286,119 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                         "truncation_reason": f"ERROR: {str(ex)}"
                     })
 
-            cascade = [algorithm]
-            for alt in PLANNER_CASCADE:
-                if alt.upper() != algorithm.upper() and alt not in cascade:
-                    cascade.append(alt)
+            is_fastest_mode = algorithm.lower() in ("auto", "fastest", "fastest_optimized", "fastest_optimal")
+            search_benchmark_data = []
 
-            candidate = None
-            used_algorithm = algorithm
-            planner = None
+            if is_fastest_mode:
+                candidate_planners = ["A*", "BFS", "BEST_FIRST"]
+                successful_candidates = []
 
-            for planner_idx, algo_name in enumerate(cascade):
-                if planner_idx > 0:
-                    await emit("PLANNER_CASCADE", f"Cascading to {algo_name} planner...", {
-                        "algorithm": algo_name, "cascade_step": planner_idx + 1,
-                    })
+                for algo_name in candidate_planners:
+                    t_start = time.perf_counter()
+                    try:
+                        p = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
+                        plan_result = p.search(problem, target_domain)
+                        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
 
-                t2 = time.perf_counter()
-                try:
-                    planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
-                    plan_result = planner.search(problem, target_domain)
-                    t_plan_ms = (time.perf_counter() - t2) * 1000.0
+                        entry = {
+                            "algorithm": algo_name,
+                            "duration_ms": round(elapsed_ms, 2),
+                            "cost": plan_result.total_cost if plan_result.is_success else -1,
+                            "nodes_expanded": plan_result.nodes_expanded,
+                            "is_success": plan_result.is_success,
+                            "is_winner": False,
+                        }
+                        search_benchmark_data.append(entry)
+                        if plan_result.is_success:
+                            successful_candidates.append((elapsed_ms, plan_result.total_cost, algo_name, plan_result, entry))
+                    except Exception as ex:
+                        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                        search_benchmark_data.append({
+                            "algorithm": algo_name,
+                            "duration_ms": round(elapsed_ms, 2),
+                            "cost": -1,
+                            "nodes_expanded": 0,
+                            "is_success": False,
+                            "is_winner": False,
+                        })
 
-                    if plan_result.is_success:
-                        candidate = plan_result
-                        used_algorithm = algo_name
-                        trace.stage_trace.append(StageAttemptRecord(
-                            stage="PLAN",
-                            attempt=planner_idx + 1,
-                            status=PipelineStageStatus.SUCCESS,
-                            provider_used=algo_name,
-                            duration_ms=t_plan_ms,
-                            recovery_action="planner_cascade" if planner_idx > 0 else None,
-                        ))
-                        if planner_idx > 0:
-                            trace.planner_cascades += 1
-                        break
-                    else:
+                if successful_candidates:
+                    # Select the fastest search algorithm to reach the final goal state
+                    successful_candidates.sort(key=lambda x: (x[0], x[1]))
+                    best_time, best_cost, best_algo, best_res, best_entry = successful_candidates[0]
+                    best_entry["is_winner"] = True
+                    candidate = best_res
+                    used_algorithm = best_algo
+                    t_plan_ms = best_time
+                    planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(best_algo)
+                    planner_idx = 0
+                    trace.stage_trace.append(StageAttemptRecord(
+                        stage="PLAN",
+                        attempt=1,
+                        status=PipelineStageStatus.SUCCESS,
+                        provider_used=f"{used_algorithm} (Fastest to Goal)",
+                        duration_ms=t_plan_ms,
+                        recovery_action=None,
+                    ))
+                else:
+                    candidate = None
+                    used_algorithm = "A*"
+                    t_plan_ms = 0.0
+            else:
+                cascade = [algorithm]
+                for alt in PLANNER_CASCADE:
+                    if alt.upper() != algorithm.upper() and alt not in cascade:
+                        cascade.append(alt)
+
+                candidate = None
+                used_algorithm = algorithm
+                planner = None
+
+                for planner_idx, algo_name in enumerate(cascade):
+                    if planner_idx > 0:
+                        await emit("PLANNER_CASCADE", f"Cascading to {algo_name} planner...", {
+                            "algorithm": algo_name, "cascade_step": planner_idx + 1,
+                        })
+
+                    t2 = time.perf_counter()
+                    try:
+                        planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
+                        plan_result = planner.search(problem, target_domain)
+                        t_plan_ms = (time.perf_counter() - t2) * 1000.0
+
+                        if plan_result.is_success:
+                            candidate = plan_result
+                            used_algorithm = algo_name
+                            trace.stage_trace.append(StageAttemptRecord(
+                                stage="PLAN",
+                                attempt=planner_idx + 1,
+                                status=PipelineStageStatus.SUCCESS,
+                                provider_used=algo_name,
+                                duration_ms=t_plan_ms,
+                                recovery_action="planner_cascade" if planner_idx > 0 else None,
+                            ))
+                            if planner_idx > 0:
+                                trace.planner_cascades += 1
+                            break
+                        else:
+                            trace.stage_trace.append(StageAttemptRecord(
+                                stage="PLAN",
+                                attempt=planner_idx + 1,
+                                status=PipelineStageStatus.FAILED,
+                                provider_used=algo_name,
+                                duration_ms=t_plan_ms,
+                                error=plan_result.failure_reason,
+                            ))
+                    except Exception as e:
+                        t_plan_ms = (time.perf_counter() - t2) * 1000.0
                         trace.stage_trace.append(StageAttemptRecord(
                             stage="PLAN",
                             attempt=planner_idx + 1,
                             status=PipelineStageStatus.FAILED,
                             provider_used=algo_name,
                             duration_ms=t_plan_ms,
-                            error=plan_result.failure_reason,
+                            error=str(e),
                         ))
-                except Exception as e:
-                    t_plan_ms = (time.perf_counter() - t2) * 1000.0
-                    trace.stage_trace.append(StageAttemptRecord(
-                        stage="PLAN",
-                        attempt=planner_idx + 1,
-                        status=PipelineStageStatus.FAILED,
-                        provider_used=algo_name,
-                        duration_ms=t_plan_ms,
-                        error=str(e),
-                    ))
 
             if candidate is None:
                 if backtrack_idx < orchestrator.max_backtracks:
@@ -367,12 +426,20 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                     total_cost=candidate.total_cost,
                 )
 
+            search_msg = (
+                f"Candidate plan found via {used_algorithm} [Fastest Optimized Search to Goal: {t_plan_ms:.2f} ms | {len(candidate.actions)} actions, cost: {candidate.total_cost}]."
+                if is_fastest_mode
+                else f"Candidate plan found via {used_algorithm} in {t_plan_ms:.1f} ms ({len(candidate.actions)} actions, cost: {candidate.total_cost})."
+            )
+
             await emit("SEARCH_COMPLETED",
-                f"Candidate plan found via {used_algorithm} in {t_plan_ms:.1f} ms ({len(candidate.actions)} actions, cost: {candidate.total_cost}).",
+                search_msg,
                 {
                     "actions": [a.model_dump() for a in candidate.actions],
                     "cost": candidate.total_cost,
                     "algorithm": used_algorithm,
+                    "is_fastest_mode": is_fastest_mode,
+                    "search_benchmark": search_benchmark_data if is_fastest_mode else None,
                     "cascade_steps": planner_idx + 1 if planner_idx else 1,
                     "stage_duration_ms": round(t_plan_ms, 2),
                 })
@@ -416,6 +483,8 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
 
                 # ─── Stage 5: CEGIS Repair Loop ───────────────────────
                 t4 = time.perf_counter()
+                if 'planner' not in locals() or planner is None:
+                    planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(used_algorithm or "A*")
                 orchestrator.replanning_engine.planner = planner
                 replan_res = orchestrator.replanning_engine.run_repair_loop(
                     problem=problem,
