@@ -52,6 +52,7 @@ export function StateSpaceExplorer({
   // Selection & Hover (no scale transform, stable tracking)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoveredEdgeKey, setHoveredEdgeKey] = useState<string | null>(null);
 
   // Zoom & Pan navigation state with focal-point cursor zooming
   const MIN_ZOOM = 0.2;
@@ -354,13 +355,121 @@ export function StateSpaceExplorer({
     return currentNodes.find((n) => n.id === selectedNodeId) || null;
   }, [currentNodes, selectedNodeId]);
 
-  // Incoming and outgoing transitions for selected node
-  const { incomingTransitions, outgoingTransitions } = useMemo(() => {
-    if (!selectedNodeId) return { incomingTransitions: [], outgoingTransitions: [] };
-    const incoming = currentEdges.filter((e) => e.target === selectedNodeId);
+  // Helper to format full action name with arguments (e.g., stack(blue_box, glass))
+  const formatActionCall = useCallback((edge: GraphEdge | null | undefined): string => {
+    if (!edge) return "";
+    if (edge.label && edge.label.includes("(")) return edge.label;
+    if (edge.action_args && edge.action_args.length > 0) {
+      return `${edge.action_name}(${edge.action_args.join(", ")})`;
+    }
+    return edge.action_name;
+  }, []);
+
+  // Filter edges to strictly forward search tree transitions (target depth > source depth)
+  const forwardEdges = useMemo(() => {
+    return currentEdges.filter((edge) => {
+      const sNode = currentNodes.find((n) => n.id === edge.source);
+      const tNode = currentNodes.find((n) => n.id === edge.target);
+      if (!sNode || !tNode) return false;
+      return (tNode.depth ?? 0) > (sNode.depth ?? 0);
+    });
+  }, [currentEdges, currentNodes]);
+
+  // Trace depth-first / search derivation trajectory from Root (s0) to Selected Node
+  const selectedTrajectory = useMemo(() => {
+    if (!selectedNodeId || !selectedNode) {
+      return {
+        pathEdges: [] as GraphEdge[],
+        edgeKeyToStep: new Map<string, { stepNumber: number; actionText: string }>(),
+        pathNodeIds: [] as string[],
+      };
+    }
+
+    if ((selectedNode.depth ?? 0) === 0 || selectedNode.is_initial) {
+      return {
+        pathEdges: [] as GraphEdge[],
+        edgeKeyToStep: new Map<string, { stepNumber: number; actionText: string }>(),
+        pathNodeIds: [selectedNode.id],
+      };
+    }
+
+    const pathEdges: GraphEdge[] = [];
+    const pathNodeIds: string[] = [selectedNodeId];
+    let currId = selectedNodeId;
+    const visited = new Set<string>();
+
+    while (currId && !visited.has(currId)) {
+      visited.add(currId);
+      const curr = currentNodes.find((n) => n.id === currId);
+      if (!curr || (curr.depth ?? 0) === 0 || curr.is_initial) break;
+
+      // Find arrival forward edge where source has depth < curr.depth
+      // Prefer parent with depth === curr.depth - 1
+      const candidates = forwardEdges.filter((e) => e.target === currId);
+      let bestEdge: GraphEdge | undefined = candidates.find((e) => {
+        const s = currentNodes.find((n) => n.id === e.source);
+        return s && (s.depth ?? 0) === (curr.depth ?? 0) - 1;
+      });
+
+      if (!bestEdge && candidates.length > 0) {
+        bestEdge = candidates[0];
+      }
+
+      if (!bestEdge) break;
+
+      pathEdges.unshift(bestEdge);
+      pathNodeIds.unshift(bestEdge.source);
+      currId = bestEdge.source;
+    }
+
+    const edgeKeyToStep = new Map<string, { stepNumber: number; actionText: string }>();
+    pathEdges.forEach((edge, idx) => {
+      const key = `${edge.source}->${edge.target}`;
+      edgeKeyToStep.set(key, {
+        stepNumber: idx + 1,
+        actionText: formatActionCall(edge),
+      });
+    });
+
+    return { pathEdges, edgeKeyToStep, pathNodeIds };
+  }, [selectedNodeId, selectedNode, currentNodes, forwardEdges, formatActionCall]);
+
+  // Transition details for selected node
+  const { parentTransition, parentSourceNode, forwardActions, reverseActions } = useMemo(() => {
+    if (!selectedNodeId || !selectedNode) {
+      return { parentTransition: null, parentSourceNode: null, forwardActions: [], reverseActions: [] };
+    }
+
+    // Find parent edge (edge that led to this node from a shallower depth)
+    const pEdge = currentEdges.find((e) => {
+      if (e.target !== selectedNodeId) return false;
+      const sNode = currentNodes.find((n) => n.id === e.source);
+      return sNode && (sNode.depth ?? 0) < (selectedNode.depth ?? 0);
+    }) || null;
+
+    const pSource = pEdge ? (currentNodes.find((n) => n.id === pEdge.source) || null) : null;
+
+    // Outgoing edges partitioned into forward progress vs reverse cycles
     const outgoing = currentEdges.filter((e) => e.source === selectedNodeId);
-    return { incomingTransitions: incoming, outgoingTransitions: outgoing };
-  }, [currentEdges, selectedNodeId]);
+    const fwd: GraphEdge[] = [];
+    const rev: GraphEdge[] = [];
+
+    outgoing.forEach((e) => {
+      const tNode = currentNodes.find((n) => n.id === e.target);
+      if (tNode && (tNode.depth ?? 0) > (selectedNode.depth ?? 0)) {
+        fwd.push(e);
+      } else {
+        rev.push(e);
+      }
+    });
+
+    return {
+      parentTransition: pEdge,
+      parentSourceNode: pSource,
+      forwardActions: fwd,
+      reverseActions: rev,
+    };
+  }, [selectedNodeId, selectedNode, currentEdges, currentNodes]);
 
   // Filtered nodes
   const filteredNodeIds = useMemo(() => {
@@ -1391,47 +1500,111 @@ export function StateSpaceExplorer({
               >
                 <polygon points="0 0, 10 4, 0 8" fill="#10b981" />
               </marker>
+              <marker
+                id="arrowhead-trajectory"
+                markerWidth="9"
+                markerHeight="7"
+                refX="19"
+                refY="3.5"
+                orient="auto"
+              >
+                <polygon points="0 0, 9 3.5, 0 7" fill="#38bdf8" />
+              </marker>
             </defs>
 
             <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
-              {/* Edges */}
-              {currentEdges.map((edge, idx) => {
+              {/* Strictly Single-Directional Forward Search Tree Edges */}
+              {forwardEdges.map((edge, idx) => {
                 const s = nodePositions[edge.source];
                 const t = nodePositions[edge.target];
                 if (!s || !t) return null;
 
                 const edgeKey = `${edge.source}->${edge.target}`;
+                const trajectoryStep = selectedTrajectory.edgeKeyToStep.get(edgeKey);
+                const isOnTrajectory = Boolean(trajectoryStep);
+                const isHovered = hoveredEdgeKey === edgeKey;
                 const isSolutionEdge = activeSimStep ? activeSimStep.solutionEdgeKeys.has(edgeKey) : false;
-                const isCycle = edge.is_cycle;
 
-                // Curved Bézier path for cycles or straight for forward transitions
-                const pathData = isCycle
-                  ? `M ${s.x} ${s.y} Q ${(s.x + t.x) / 2 + 35} ${(s.y + t.y) / 2 - 35} ${t.x} ${t.y}`
-                  : `M ${s.x} ${s.y} L ${t.x} ${t.y}`;
+                const pathData = `M ${s.x} ${s.y} L ${t.x} ${t.y}`;
+                const midX = (s.x + t.x) / 2;
+                const midY = (s.y + t.y) / 2;
+
+                // Visual styling based on trajectory and simulation state
+                let strokeColor = "#334155";
+                let strokeWidth = 1.3;
+                let markerEnd = "url(#arrowhead)";
+                let filterClass: string | undefined = undefined;
+
+                if (isOnTrajectory) {
+                  strokeColor = "#38bdf8"; // vibrant cyan for selected search trajectory
+                  strokeWidth = 2.8;
+                  markerEnd = "url(#arrowhead-trajectory)";
+                  filterClass = "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.7)]";
+                } else if (isSolutionEdge) {
+                  strokeColor = "#10b981"; // emerald for solution
+                  strokeWidth = 3;
+                  markerEnd = "url(#arrowhead-solution)";
+                  filterClass = "filter drop-shadow-[0_0_6px_rgba(16,185,129,0.7)]";
+                } else if (isHovered) {
+                  strokeColor = "#94a3b8";
+                  strokeWidth = 1.8;
+                }
+
+                // Strictly show action pill ONLY on the selected root-to-node trajectory (or on hover)
+                // This eliminates overlapping labels completely across sibling/divergent branches.
+                const showBadge = isOnTrajectory || isHovered;
+                const badgeText = isOnTrajectory
+                  ? `Step ${trajectoryStep!.stepNumber}: ${trajectoryStep!.actionText}`
+                  : formatActionCall(edge);
+                const badgeWidth = Math.max(76, badgeText.length * 6.6 + 18);
 
                 return (
-                  <g key={`edge-${idx}`}>
+                  <g
+                    key={`edge-${idx}`}
+                    onMouseEnter={() => setHoveredEdgeKey(edgeKey)}
+                    onMouseLeave={() => setHoveredEdgeKey(null)}
+                    className="cursor-pointer"
+                  >
+                    {/* Transparent wider hit area for easy hover */}
                     <path
                       d={pathData}
                       fill="none"
-                      stroke={
-                        isSolutionEdge
-                          ? "#10b981"
-                          : isCycle
-                          ? "#c084fc"
-                          : "#334155"
-                      }
-                      strokeWidth={isSolutionEdge ? 3.5 : isCycle ? 1.8 : 1.2}
-                      strokeDasharray={isCycle ? "4 3" : undefined}
-                      markerEnd={
-                        isSolutionEdge
-                          ? "url(#arrowhead-solution)"
-                          : isCycle
-                          ? "url(#arrowhead-cycle)"
-                          : "url(#arrowhead)"
-                      }
-                      className={isSolutionEdge ? "filter drop-shadow-[0_0_6px_rgba(16,185,129,0.7)]" : undefined}
+                      stroke="transparent"
+                      strokeWidth={14}
                     />
+                    <path
+                      d={pathData}
+                      fill="none"
+                      stroke={strokeColor}
+                      strokeWidth={strokeWidth}
+                      markerEnd={markerEnd}
+                      className={filterClass}
+                    />
+                    {showBadge && (
+                      <g transform={`translate(${midX}, ${midY})`} className="pointer-events-none select-none">
+                        <rect
+                          x={-badgeWidth / 2}
+                          y={-10}
+                          width={badgeWidth}
+                          height={20}
+                          rx={5}
+                          fill="#030712"
+                          stroke={isOnTrajectory ? "#0284c7" : "#475569"}
+                          strokeWidth={isOnTrajectory ? 1.5 : 1}
+                          className={isOnTrajectory ? "filter drop-shadow-[0_2px_10px_rgba(2,132,199,0.6)]" : "filter drop-shadow-sm"}
+                        />
+                        <text
+                          textAnchor="middle"
+                          dy="3.5"
+                          fontSize="9"
+                          fill={isOnTrajectory ? "#38bdf8" : "#cbd5e1"}
+                          fontWeight="bold"
+                          fontFamily="monospace"
+                        >
+                          {badgeText}
+                        </text>
+                      </g>
+                    )}
                   </g>
                 );
               })}
@@ -1493,6 +1666,18 @@ export function StateSpaceExplorer({
                         stroke={isSelected ? "#38bdf8" : "#94a3b8"}
                         strokeWidth={2}
                         strokeDasharray={isSelected ? undefined : "3 3"}
+                        className="pointer-events-none"
+                      />
+                    )}
+
+                    {/* Trajectory Path Node Ring */}
+                    {selectedTrajectory.pathNodeIds.includes(node.id) && !isSelected && (
+                      <circle
+                        r={radius + 4}
+                        fill="none"
+                        stroke="#38bdf8"
+                        strokeWidth={1.5}
+                        strokeOpacity={0.65}
                         className="pointer-events-none"
                       />
                     )}
@@ -1677,55 +1862,61 @@ export function StateSpaceExplorer({
                 </p>
               </div>
 
-              {/* LOCAL TOPOLOGY SUBGRAPH (Flow beside the state space graph) */}
-              <div className="flex flex-col gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3">
+              {/* SEARCH TRAJECTORY: ROOT-TO-NODE STEP-BY-STEP */}
+              <div className="flex flex-col gap-2 rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                    Local Transition Subgraph
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
+                    Search Trajectory ({selectedTrajectory.pathEdges.length} {selectedTrajectory.pathEdges.length === 1 ? "Step" : "Steps"} from Root)
                   </span>
-                  <span className="text-[10px] font-mono text-cyan-400">
-                    {incomingTransitions.length} in · {outgoingTransitions.length} out
+                  <span className="font-mono text-[10px] text-cyan-300 font-semibold">
+                    Depth {selectedNode.depth}
                   </span>
                 </div>
-                
-                {/* SVG Mini Neighborhood Diagram */}
-                <div className="w-full h-24 bg-slate-900/60 rounded-lg border border-slate-800/80 flex items-center justify-center relative overflow-hidden">
-                  <svg className="w-full h-full">
-                    {/* Incoming links */}
-                    {incomingTransitions.slice(0, 3).map((e, idx) => {
-                      const y = 20 + idx * 24;
-                      return (
-                        <g key={`in-${idx}`}>
-                          <line x1={40} y1={y} x2={130} y2={48} stroke="#0ea5e9" strokeWidth={1.5} markerEnd="url(#arrowhead)" />
-                          <circle cx={40} cy={y} r={8} fill="#0369a1" stroke="#38bdf8" strokeWidth={1} />
-                          <text x={40} y={y + 3} textAnchor="middle" fontSize={8} fill="#fff" fontFamily="monospace">
+
+                {selectedTrajectory.pathEdges.length > 0 ? (
+                  <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
+                    {selectedTrajectory.pathEdges.map((e, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between rounded bg-slate-900/90 px-2.5 py-1.5 text-xs border border-slate-800"
+                      >
+                        <div className="flex items-center gap-2 overflow-hidden mr-2">
+                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-cyan-500/20 text-[9px] font-bold text-cyan-300 border border-cyan-500/40">
+                            {idx + 1}
+                          </span>
+                          <span className="font-mono text-emerald-300 text-[11px] font-semibold truncate" title={formatActionCall(e)}>
+                            {formatActionCall(e)}
+                          </span>
+                        </div>
+                        <span className="font-mono text-[10px] text-slate-400 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedNodeId(e.source)}
+                            className="hover:text-cyan-300 hover:underline"
+                            title={`Jump to ${formatStateId(e.source)}`}
+                          >
                             {formatStateId(e.source)}
-                          </text>
-                        </g>
-                      );
-                    })}
-
-                    {/* Central selected node */}
-                    <circle cx={145} cy={48} r={14} fill="#0284c7" stroke="#ffffff" strokeWidth={2.5} className="filter drop-shadow-md" />
-                    <text x={145} y={52} textAnchor="middle" fontSize={9} fill="#fff" fontWeight="bold" fontFamily="monospace">
-                      {formatStateId(selectedNode.id)}
-                    </text>
-
-                    {/* Outgoing links */}
-                    {outgoingTransitions.slice(0, 3).map((e, idx) => {
-                      const y = 20 + idx * 24;
-                      return (
-                        <g key={`out-${idx}`}>
-                          <line x1={160} y1={48} x2={250} y2={y} stroke="#6366f1" strokeWidth={1.5} markerEnd="url(#arrowhead)" />
-                          <circle cx={250} cy={y} r={8} fill="#4338ca" stroke="#818cf8" strokeWidth={1} />
-                          <text x={250} y={y + 3} textAnchor="middle" fontSize={8} fill="#fff" fontFamily="monospace">
+                          </button>
+                          <span className="text-slate-600 mx-1">→</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedNodeId(e.target)}
+                            className="hover:text-cyan-300 hover:underline font-bold text-slate-300"
+                            title={`Jump to ${formatStateId(e.target)}`}
+                          >
                             {formatStateId(e.target)}
-                          </text>
-                        </g>
-                      );
-                    })}
-                  </svg>
-                </div>
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="text-xs text-slate-300 italic">
+                    {selectedNode.is_initial
+                      ? "Initial State s0 (Root of Search Tree · Depth 0). Select any child node to view its step-by-step path from root."
+                      : "Search Frontier Root"}
+                  </span>
+                )}
               </div>
 
               {/* Active Symbolic Facts */}
@@ -1749,62 +1940,59 @@ export function StateSpaceExplorer({
                 </div>
               </div>
 
-              {/* Incoming Transitions */}
+              {/* ENABLED FORWARD SEARCH ACTIONS */}
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Incoming Transitions ({incomingTransitions.length})
+                  Forward Search Actions ({forwardActions.length})
                 </span>
-                <div className="max-h-32 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2 flex flex-col gap-1.5">
-                  {incomingTransitions.length > 0 ? (
-                    incomingTransitions.map((e, idx) => (
-                      <div
-                        key={idx}
-                        onClick={() => setSelectedNodeId(e.source)}
-                        className="cursor-pointer flex items-center justify-between rounded bg-slate-900 p-1.5 text-xs hover:bg-slate-800 transition"
-                      >
-                        <span className="font-mono font-medium text-cyan-400">
-                          {e.action_name}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-500">
-                          from {formatStateId(e.source)}
-                        </span>
-                      </div>
-                    ))
+                <div className="max-h-44 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2 flex flex-col gap-1.5">
+                  {forwardActions.length > 0 ? (
+                    forwardActions.map((e, idx) => {
+                      const tNode = currentNodes.find((n) => n.id === e.target);
+                      return (
+                        <div
+                          key={idx}
+                          onClick={() => setSelectedNodeId(e.target)}
+                          className="cursor-pointer flex items-center justify-between rounded bg-slate-900 p-2 text-xs hover:bg-slate-800 transition border border-slate-800/80"
+                        >
+                          <span className="font-mono font-bold text-emerald-400">
+                            {formatActionCall(e)}
+                          </span>
+                          <span className="font-mono text-[10px] text-slate-400 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                            to {formatStateId(e.target)} (d={tNode?.depth ?? 0})
+                          </span>
+                        </div>
+                      );
+                    })
                   ) : (
-                    <span className="text-xs text-slate-500 italic p-1">
-                      {selectedNode.is_initial ? "Initial root node (no parent)." : "None recorded."}
+                    <span className="text-xs text-slate-400 italic p-1">
+                      {selectedNode.is_goal
+                        ? "Goal state reached! No further forward action expansion needed."
+                        : "No forward actions (Dead End or Leaf)."}
                     </span>
                   )}
                 </div>
-              </div>
 
-              {/* Outgoing Transitions */}
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Enabled Actions ({outgoingTransitions.length})
-                </span>
-                <div className="max-h-32 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-2 flex flex-col gap-1.5">
-                  {outgoingTransitions.length > 0 ? (
-                    outgoingTransitions.map((e, idx) => (
-                      <div
-                        key={idx}
-                        onClick={() => setSelectedNodeId(e.target)}
-                        className="cursor-pointer flex items-center justify-between rounded bg-slate-900 p-1.5 text-xs hover:bg-slate-800 transition"
-                      >
-                        <span className="font-mono font-medium text-indigo-400">
-                          {e.action_name}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-500">
-                          to {formatStateId(e.target)} {e.is_cycle && "(cycle)"}
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <span className="text-xs text-rose-400/90 italic p-1">
-                      No outgoing actions (Dead End or Frontier).
+                {/* PRUNED REVERSE TRANSITIONS (Explains why put_down or unstack are not followed) */}
+                {reverseActions.length > 0 && (
+                  <div className="mt-1 flex flex-col gap-1">
+                    <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                      Pruned Cycle Actions ({reverseActions.length})
                     </span>
-                  )}
-                </div>
+                    <div className="rounded-lg border border-slate-800/70 bg-slate-950/60 p-2 flex flex-col gap-1.5">
+                      {reverseActions.map((e, idx) => (
+                        <div key={idx} className="flex items-center justify-between text-xs text-slate-500">
+                          <span className="font-mono line-through text-slate-500 text-[11px]">
+                            {formatActionCall(e)}
+                          </span>
+                          <span className="text-[9px] font-medium text-rose-400 bg-rose-950/30 px-1.5 py-0.5 rounded border border-rose-900/30">
+                            Pruned by A* Closed List (to {formatStateId(e.target)})
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ) : (
