@@ -10,7 +10,6 @@
 | Team          | Path_X                                                                                    |
 | Track         | Demo                                                                                      |
 | Project topic | Search & Problem Solving                                                                  |
-| Repository    | [github.com/saicharanyadavalli/RE-PLAN-V](https://github.com/saicharanyadavalli/RE-PLAN-V) |
 
 ## Team
 
