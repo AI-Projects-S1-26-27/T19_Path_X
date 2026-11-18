@@ -2,11 +2,9 @@
 
 import pytest
 from fastapi.testclient import TestClient
-from PIL import Image
 
 from app.main import create_app
 from app.services.pipeline import PipelineOrchestrator
-from interpretation.vision.scene_generator import SyntheticSceneGenerator
 
 
 @pytest.fixture
@@ -47,22 +45,6 @@ class TestPipelineOrchestratorE2E:
         assert result.replanning_result.success is True
         assert result.final_verification.is_valid is True
         assert result.final_plan is not None
-
-    def test_pipeline_with_multimodal_vision(self, orchestrator: PipelineOrchestrator):
-        gen = SyntheticSceneGenerator()
-        blocks = [
-            {"name": "red_box", "color": "red", "shape": "box"},
-            {"name": "green_box", "color": "green", "shape": "box"},
-        ]
-        scene = gen.generate_tabletop_scene(blocks)
-
-        prompt = "Stack the red box on the green box."
-        result = orchestrator.run(prompt=prompt, image=scene.image, algorithm="A*")
-
-        assert result.has_image is True
-        assert result.validation.is_valid is True
-        assert result.final_plan is not None
-
 
 class TestFastAPIRoutesE2E:
     """Tests API routes and server integration."""

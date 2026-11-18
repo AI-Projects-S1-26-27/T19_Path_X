@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import time
 from typing import Any, Dict, List, Optional
-from PIL import Image
 from pydantic import BaseModel, Field
 
 from core.actions.domain import Domain, create_blocks_world_domain, create_gridworld_domain
@@ -43,7 +42,6 @@ from core.world.problem import SymbolicProblem
 from interpretation.llm.base import BaseLLMProvider
 from interpretation.llm.mock import MockLLMProvider
 from interpretation.validator.validator import ConsistencyValidator
-from interpretation.vision.detector import DeterministicSceneDetector
 from app.services.problem_builder import ValidatedProblemBuilder
 
 logger = get_logger("pipeline")
@@ -58,7 +56,6 @@ class PipelineExecutionResult(BaseModel):
     raw_prompt: str
     status: str = "COMPLETED"
     domain_id: Optional[str] = None
-    has_image: bool = False
     interpretation: TaskProposalSchema
     validation: ProposalValidationResult
     symbolic_problem_name: str
@@ -126,14 +123,12 @@ class PipelineOrchestrator:
         self.cex_generator = CounterexampleGenerator()
         self.attribution_engine = FaultAttributionEngine()
         self.repair_generator = RepairGenerator()
-        self.vision_detector = DeterministicSceneDetector()
         self.max_interpret_retries = max_interpret_retries
         self.max_backtracks = max_backtracks
 
     def run(
         self,
         prompt: str,
-        image: Optional[Image.Image] = None,
         algorithm: str = "A*",
         force_invalid_first_candidate: bool = False,
         provider_type: Optional[str] = None,
@@ -403,13 +398,6 @@ class PipelineOrchestrator:
                     if constraint not in proposal.negative_constraints:
                         proposal.negative_constraints.append(constraint)
 
-            # Optional Vision perception integration
-            if image is not None:
-                scene_proposal = self.vision_detector.detect(image)
-                for obj in scene_proposal.detected_objects:
-                    if obj.name not in proposal.entities:
-                        proposal.entities[obj.name] = obj.object_type
-
             # ─── Stage 2: VALIDATE (via Authoritative Problem Builder) ─
             t1 = time.perf_counter()
             build_res = self.problem_builder.build_from_proposal(
@@ -439,7 +427,6 @@ class PipelineOrchestrator:
                         raw_prompt=prompt,
                         status="INVARIANT_VIOLATION",
                         domain_id=routed_domain_id,
-                        has_image=(image is not None),
                         interpretation=build_res.proposal or proposal,
                         validation=inv_validation,
                         symbolic_problem_name="initial_state_invariant_violation",
@@ -498,7 +485,6 @@ class PipelineOrchestrator:
                     raw_prompt=prompt,
                     status="INVALID_PROPOSAL",
                     domain_id=routed_domain_id,
-                    has_image=(image is not None),
                     interpretation=proposal,
                     validation=val_res,
                     symbolic_problem_name="invalid_proposal",
@@ -650,7 +636,6 @@ class PipelineOrchestrator:
                     raw_prompt=prompt,
                     status="INVALID_PROPOSAL",
                     domain_id=routed_domain_id,
-                    has_image=(image is not None),
                     interpretation=proposal,
                     validation=val_res,
                     symbolic_problem_name=problem.name,
@@ -773,7 +758,6 @@ class PipelineOrchestrator:
                 raw_prompt=prompt,
                 status="COMPLETED" if (final_verif and final_verif.is_valid) else "FAILED",
                 domain_id=routed_domain_id,
-                has_image=(image is not None),
                 interpretation=proposal,
                 validation=val_res,
                 symbolic_problem_name=problem.name,
@@ -807,7 +791,6 @@ class PipelineOrchestrator:
             raw_prompt=prompt,
             status="FAILED",
             domain_id=routed_domain_id,
-            has_image=(image is not None),
             interpretation=fallback_proposal,
             validation=fallback_validation,
             symbolic_problem_name="exhausted",

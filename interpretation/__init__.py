@@ -1,1 +1,1 @@
-"""Interpretation layer for natural language and vision."""
+"""Natural-language interpretation and proposal validation."""
