@@ -250,8 +250,8 @@ def get_providers_status() -> Dict[str, Any]:
         "nvidia": (os.environ.get("NVIDIA_API_KEY") or "").strip(),
         "gemini": (os.environ.get("GEMINI_API_KEY") or "").strip(),
     }
-    configured_default = os.environ.get("LLM_PROVIDER", "gemini").strip().lower()
-    default_provider = configured_default if configured_default in keys else "gemini"
+    configured_default = os.environ.get("LLM_PROVIDER", "default").strip().lower()
+    default_provider = configured_default if (configured_default in keys or configured_default == "default") else "default"
 
     return {
         "default_provider": default_provider,

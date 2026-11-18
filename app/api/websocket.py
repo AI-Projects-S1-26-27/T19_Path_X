@@ -120,10 +120,11 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                 routing = explicit_routing
 
         # ──── Resolve Provider ─────────────────────────────────────────
-        is_live = provider_type and provider_type != "mock"
+        resolved_provider = "auto" if provider_type == "default" else provider_type
+        is_live = resolved_provider and resolved_provider != "mock"
         if is_live:
             from interpretation.llm.live import LiveLLMProvider
-            active_provider = LiveLLMProvider(provider=provider_type, model=llm_model)
+            active_provider = LiveLLMProvider(provider=resolved_provider, model=llm_model)
         else:
             active_provider = orchestrator.llm_provider
 

@@ -93,7 +93,7 @@ export function TaskControlPanel({
   const [forceFault, setForceFault] = useState(false);
   const [enumerateGraph, setEnumerateGraph] = useState(true);
   const [maxNodes, setMaxNodes] = useState(150);
-  const [providerType, setProviderType] = useState<LLMProviderType>("gemini");
+  const [providerType, setProviderType] = useState<LLMProviderType>("default");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -101,12 +101,12 @@ export function TaskControlPanel({
       .then((response) => (response.ok ? response.json() : null))
       .then((status) => {
         const configured = status?.default_provider;
-        if (["openrouter", "nvidia", "gemini"].includes(configured)) {
+        if (["default", "openrouter", "nvidia", "gemini"].includes(configured)) {
           setProviderType(configured as LLMProviderType);
         }
       })
       .catch(() => {
-        // Keep Gemini selected when provider configuration cannot be fetched.
+        // Keep Default Engine selected when provider configuration cannot be fetched.
       });
     return () => controller.abort();
   }, []);
@@ -267,6 +267,7 @@ export function TaskControlPanel({
               style={{ colorScheme: "dark" }}
               className="w-full rounded-xl border border-slate-700 bg-slate-900 p-2.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
             >
+              <option value="default" className="bg-slate-900 text-slate-100 py-1.5">Default Engine</option>
               <option value="mock" className="bg-slate-900 text-slate-100 py-1.5">Deterministic Zero-API Mock (Offline / ₹0)</option>
               <option value="openrouter" className="bg-slate-900 text-slate-100 py-1.5">OpenRouter API</option>
               <option value="nvidia" className="bg-slate-900 text-slate-100 py-1.5">NVIDIA NIM Cloud</option>

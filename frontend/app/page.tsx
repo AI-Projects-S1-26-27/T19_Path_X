@@ -35,7 +35,7 @@ export default function Home() {
       />
 
       {/* Main Container */}
-      <main className="mx-auto flex-1 w-full max-w-7xl p-4 sm:p-6">
+      <main className="mx-auto flex-1 w-full max-w-7xl p-4 sm:p-6 pb-12">
         {error && (
           <div className="mb-4 rounded-xl border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300">
             <strong>System Error:</strong> {error}
@@ -124,7 +124,7 @@ export default function Home() {
               </div>
 
               {/* Right Column: Live Execution Trace Stepper */}
-              <div className="lg:col-span-7">
+              <div className="flex flex-col gap-4 lg:col-span-7">
                 <ExecutionStepper state={state} isStreaming={isStreaming} />
                 <PipelineEventLog events={events} isStreaming={isStreaming} />
               </div>

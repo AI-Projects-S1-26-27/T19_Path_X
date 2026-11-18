@@ -35,7 +35,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
 
   if (!hasStarted) {
     return (
-      <div className="flex h-full min-h-[300px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center">
+      <div className="flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center">
         <Sparkles className="mb-3 h-8 w-8 text-slate-600" />
         <h3 className="font-mono text-sm font-semibold text-slate-400">Pipeline Idle</h3>
         <p className="mt-1 max-w-sm text-xs text-slate-500">
@@ -326,15 +326,15 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
               <ShieldCheck className="h-6 w-6 text-emerald-400" />
               <div>
                 <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-emerald-300">
-                  Ready for Robotic Dispatch
+                  Verification is Complete
                 </h4>
                 <p className="text-[11px] text-slate-400">
-                  The final plan passed the modeled precondition, safety-constraint, invariant, and goal checks.
+                  The final plan passed all modeled precondition, safety-constraint, invariant, and goal checks.
                 </p>
               </div>
             </div>
             <span className="rounded-full bg-emerald-500/20 px-3 py-1 font-mono text-xs font-bold text-emerald-300">
-              VERIFIED UNDER MODEL
+              VERIFICATION COMPLETE
             </span>
           </div>
         )}
