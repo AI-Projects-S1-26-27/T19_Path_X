@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { GraphNode, GraphEdge, GraphStats, FactSchema } from "../types/pipeline";
-import { getApiBaseUrl } from "../utils/api";
 
 export type SearchAlgorithmType = "astar" | "bfs" | "greedy";
 
@@ -33,18 +32,6 @@ export function StateSpaceExplorer({
   streamedStats,
   streamedStatus = "IDLE",
 }: StateSpaceExplorerProps) {
-  // Domain & Standalone exploration state
-  const [selectedDomain, setSelectedDomain] = useState<string>("blocks_world");
-  const [prompt, setPrompt] = useState<string>("Stack the red box on the blue box.");
-  const [maxNodesLimit, setMaxNodesLimit] = useState<number>(150);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [activeSource, setActiveSource] = useState<"stream" | "standalone">("stream");
-
-  // Standalone graph data
-  const [standaloneNodes, setStandaloneNodes] = useState<GraphNode[]>([]);
-  const [standaloneEdges, setStandaloneEdges] = useState<GraphEdge[]>([]);
-  const [standaloneStats, setStandaloneStats] = useState<GraphStats | null>(null);
-
   // Filter & Search
   const [searchFilter, setSearchFilter] = useState<string>("");
   const [filterType, setFilterType] = useState<"all" | "goal" | "dead_end" | "boundary">("all");
@@ -58,6 +45,8 @@ export function StateSpaceExplorer({
   const MAX_ZOOM = 3.5;
   const [zoom, setZoom] = useState<number>(0.9);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const zoomRef = useRef<number>(0.9);
+  const panRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -70,12 +59,11 @@ export function StateSpaceExplorer({
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(800); // ms per step
 
-  // Use stream data if active and present, otherwise standalone
-  const hasStreamData = streamedNodes.length > 0;
-  const rawNodes = (activeSource === "stream" && hasStreamData) ? streamedNodes : standaloneNodes;
-  const rawEdges = (activeSource === "stream" && hasStreamData) ? streamedEdges : standaloneEdges;
-  const currentStats = (activeSource === "stream" && hasStreamData) ? streamedStats : standaloneStats;
-  const currentStatus = (activeSource === "stream" && hasStreamData) ? streamedStatus : (isLoading ? "ENUMERATING" : (standaloneStats ? (standaloneStats.is_complete ? "COMPLETED" : "TRUNCATED") : "IDLE"));
+  // Use live stream pipeline data
+  const rawNodes = streamedNodes;
+  const rawEdges = streamedEdges;
+  const currentStats = streamedStats;
+  const currentStatus = streamedStatus;
 
   // Unified Canonical State Normalization:
   // Guarantees that whether nodes and edges originate from WebSocket streaming (Mission Control)
@@ -130,113 +118,6 @@ export function StateSpaceExplorer({
 
     return { currentNodes: normalizedNodes, currentEdges: normalizedEdges };
   }, [rawNodes, rawEdges]);
-
-  // Automatically switch to stream source if live nodes arrive
-  useEffect(() => {
-    if (streamedNodes.length > 0) {
-      setActiveSource("stream");
-    }
-  }, [streamedNodes.length]);
-
-  // Fetch standalone enumeration from backend
-  const handleEnumerateStandalone = async () => {
-    setIsLoading(true);
-    setActiveSource("standalone");
-    try {
-      const resp = await fetch(`${getApiBaseUrl()}/api/graph/enumerate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          domain_id: selectedDomain,
-          prompt: prompt,
-          max_nodes: maxNodesLimit,
-          max_edges: maxNodesLimit * 3,
-          timeout_seconds: 5.0,
-        }),
-      });
-
-      if (!resp.ok) {
-        throw new Error(`Enumerate failed: ${await resp.text()}`);
-      }
-
-      const cytoscape = await resp.json();
-      const rawElements: Array<{ data: any }> = cytoscape.elements || [];
-
-      const nodeElements = rawElements.filter((el) => !el.data.source && !el.data.target);
-      nodeElements.sort((a, b) => {
-        if (a.data.is_initial && !b.data.is_initial) return -1;
-        if (!a.data.is_initial && b.data.is_initial) return 1;
-        return (a.data.depth ?? 0) - (b.data.depth ?? 0);
-      });
-
-      const idMap: Record<string, string> = {};
-      nodeElements.forEach((el, idx) => {
-        const rawId = String(el.data.id || el.data.node_id);
-        idMap[rawId] = `s${idx}`;
-      });
-
-      const parsedNodes: GraphNode[] = [];
-      const parsedEdges: GraphEdge[] = [];
-
-      for (const el of rawElements) {
-        const d = el.data;
-        if (d.source && d.target) {
-          const srcId = idMap[String(d.source)] || String(d.source).replace("state_", "s");
-          const tgtId = idMap[String(d.target)] || String(d.target).replace("state_", "s");
-          parsedEdges.push({
-            source: srcId,
-            target: tgtId,
-            action_name: d.label || d.action || "action",
-            action_args: [],
-            cost: d.cost ?? 1,
-            is_cycle: Boolean(d.is_cycle),
-          });
-        } else {
-          const rawId = String(d.id || d.node_id);
-          const cleanId = idMap[rawId] || rawId.replace("state_", "s");
-          parsedNodes.push({
-            id: cleanId,
-            depth: d.depth ?? 0,
-            is_initial: Boolean(d.is_initial),
-            is_goal: Boolean(d.is_goal),
-            is_dead_end: Boolean(d.is_dead_end),
-            is_truncated_boundary: Boolean(d.is_truncated_boundary),
-            facts: (d.facts || []).map((f: any) => {
-              if (typeof f === "string") {
-                const match = f.match(/([a-zA-Z_]+)\((.*)\)/);
-                return match
-                  ? { predicate: match[1], arguments: match[2].split(",").map((s) => s.trim()) }
-                  : { predicate: f, arguments: [] };
-              }
-              return f;
-            }),
-            facts_summary: Array.isArray(d.facts) ? d.facts : [],
-          });
-        }
-      }
-
-      setStandaloneNodes(parsedNodes);
-      setStandaloneEdges(parsedEdges);
-      setStandaloneStats(cytoscape.stats || {
-        total_nodes: parsedNodes.length,
-        total_edges: parsedEdges.length,
-        max_depth_reached: Math.max(0, ...parsedNodes.map(n => n.depth)),
-        goal_node_ids: parsedNodes.filter(n => n.is_goal).map(n => n.id),
-        dead_end_node_ids: parsedNodes.filter(n => n.is_dead_end).map(n => n.id),
-        is_complete: false,
-        truncation_reason: "STATS_OMITTED_BY_BACKEND",
-        enumeration_time_ms: 0.0,
-      });
-
-      if (parsedNodes.length > 0) {
-        setSelectedNodeId(parsedNodes[0].id);
-      }
-    } catch (err) {
-      console.error("State Space standalone enumeration failed:", err);
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   // Node position calculation: Stratified Hierarchical Layout centered symmetrically
   const nodePositions = useMemo(() => {
@@ -314,7 +195,7 @@ export function StateSpaceExplorer({
   }, [nodePositions]);
 
   // Centering pan calculation: positions the graph in the exact center of the SVG display
-  const getCenteredPan = useCallback((targetZoom: number = zoom) => {
+  const getCenteredPan = useCallback((targetZoom: number = 0.9) => {
     const el = svgRef.current || containerRef.current;
     const viewW = el && el.clientWidth > 0 ? el.clientWidth : 850;
     const viewH = el && el.clientHeight > 0 ? el.clientHeight : 580;
@@ -330,7 +211,7 @@ export function StateSpaceExplorer({
     }
 
     return { x: targetX, y: targetY };
-  }, [graphBounds, zoom]);
+  }, [graphBounds]);
 
   // Helper to format any state ID into a clean friendly identifier (e.g., s0, s1, etc.)
   // and guarantee that no raw hexadecimal hash strings are ever rendered.
@@ -906,91 +787,10 @@ export function StateSpaceExplorer({
             <span className="text-xs font-semibold uppercase tracking-wider text-cyan-400">
               Source:
             </span>
-            <div className="inline-flex rounded-lg border border-slate-700 bg-slate-800/80 p-0.5">
-              <button
-                type="button"
-                onClick={() => setActiveSource("stream")}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                  activeSource === "stream"
-                    ? "bg-cyan-500 text-slate-950 shadow"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Live Pipeline ({streamedNodes.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveSource("standalone")}
-                className={`rounded-md px-3 py-1 text-xs font-medium transition ${
-                  activeSource === "standalone"
-                    ? "bg-cyan-500 text-slate-950 shadow"
-                    : "text-slate-400 hover:text-slate-200"
-                }`}
-              >
-                Standalone Explorer
-              </button>
-            </div>
+            <span className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 font-mono text-xs font-semibold text-cyan-300">
+              Live Pipeline ({streamedNodes.length})
+            </span>
           </div>
-
-          {activeSource === "standalone" && (
-            <>
-              <select
-                value={selectedDomain}
-                onChange={(e) => {
-                  setSelectedDomain(e.target.value);
-                  if (e.target.value === "blocks_world") setPrompt("Stack the red box on the blue box.");
-                  if (e.target.value === "grid_world") setPrompt("Move robot from loc_0_0 to loc_2_2 and pick key_1.");
-                  if (e.target.value === "household") setPrompt("Navigate to kitchen, open cabinet, and pick mug.");
-                  if (e.target.value === "warehouse") setPrompt("Transit agv_1 to shelf_b and retrieve sku_02.");
-                  if (e.target.value === "scheduling") setPrompt("Schedule job_a on m1 and job_b on m2.");
-                  if (e.target.value === "software_workflow") setPrompt("Run unit tests, run security scan, build artifact, and deploy to staging.");
-                }}
-                style={{ colorScheme: "dark" }}
-                className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
-              >
-                <option value="blocks_world" className="bg-slate-900 text-slate-100 py-1.5">Blocks World (4 Actions)</option>
-                <option value="grid_world" className="bg-slate-900 text-slate-100 py-1.5">Grid World (2D Transfer)</option>
-                <option value="household" className="bg-slate-900 text-slate-100 py-1.5">Household Robotics (Multi-Room)</option>
-                <option value="warehouse" className="bg-slate-900 text-slate-100 py-1.5">Warehouse Operations (AGV / SKU)</option>
-                <option value="scheduling" className="bg-slate-900 text-slate-100 py-1.5">Job Shop Scheduling (Resource Allocation)</option>
-                <option value="software_workflow" className="bg-slate-900 text-slate-100 py-1.5">Software Workflow (CI/CD Gates)</option>
-              </select>
-
-              <input
-                type="text"
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="Domain instruction..."
-                className="w-64 rounded-lg border border-slate-700 bg-slate-850 px-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:border-cyan-500 focus:outline-none"
-              />
-
-              <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                <span>Max:</span>
-                <input
-                  type="number"
-                  min="20"
-                  max="600"
-                  step="20"
-                  value={maxNodesLimit}
-                  onChange={(e) => setMaxNodesLimit(Number(e.target.value))}
-                  className="w-16 rounded border border-slate-700 bg-slate-850 px-2 py-1 text-center text-xs text-cyan-300"
-                />
-              </div>
-
-              <button
-                type="button"
-                onClick={handleEnumerateStandalone}
-                disabled={isLoading}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-md hover:from-cyan-400 hover:to-blue-500 transition disabled:opacity-50"
-              >
-                {isLoading ? (
-                  <span className="animate-spin inline-block h-3 w-3 border-2 border-white border-t-transparent rounded-full" />
-                ) : (
-                  <span>Explore State Space</span>
-                )}
-              </button>
-            </>
-          )}
         </div>
 
         {/* View Controls: Zoom & Pan */}
@@ -1589,16 +1389,9 @@ export function StateSpaceExplorer({
               <span className="text-sm font-semibold text-slate-300 mb-1">
                 No Reachable States Loaded
               </span>
-              <p className="max-w-md text-xs text-slate-400 mb-4">
-                Execute a task from the Mission Control tab, or choose a domain above and click &quot;Explore State Space&quot; to compute the reachable DAG.
+              <p className="max-w-md text-xs text-slate-400">
+                Execute a task from the Mission Control tab to compute and inspect the complete reachable state graph.
               </p>
-              <button
-                type="button"
-                onClick={handleEnumerateStandalone}
-                className="rounded-lg bg-cyan-600 px-4 py-2 text-xs font-semibold text-white shadow-lg hover:bg-cyan-500 transition"
-              >
-                Enumerate Sample State Space
-              </button>
             </div>
           )}
         </div>

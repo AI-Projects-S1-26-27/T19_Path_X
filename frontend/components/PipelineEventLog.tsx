@@ -15,7 +15,7 @@ export function PipelineEventLog({ events, isStreaming }: PipelineEventLogProps)
     <section
       aria-live="polite"
       aria-label="Live pipeline events"
-      className="mt-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-4 shadow-xl"
+      className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4 shadow-xl"
     >
       <div className="mb-3 flex items-center justify-between border-b border-slate-800 pb-2">
         <h3 className="font-mono text-[11px] font-semibold uppercase tracking-wider text-slate-300">
