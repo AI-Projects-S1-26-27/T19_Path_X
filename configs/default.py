@@ -60,13 +60,6 @@ class BenchmarkConfig:
 
 
 @dataclass
-class VisionConfig:
-    backend: str = "synthetic"  # "synthetic", "opencv", "vlm"
-    canvas_width: int = 400
-    canvas_height: int = 400
-
-
-@dataclass
 class LLMConfig:
     provider: str = field(default_factory=lambda: os.environ.get("LOCAL_LLM_PROVIDER", "mock"))
     lm_studio_url: str = field(default_factory=lambda: os.environ.get("LM_STUDIO_URL", "http://127.0.0.1:1234"))
@@ -85,7 +78,6 @@ class SystemConfig:
     verification: VerificationConfig = field(default_factory=VerificationConfig)
     repair: RepairConfig = field(default_factory=RepairConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
-    vision: VisionConfig = field(default_factory=VisionConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
 
 

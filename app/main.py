@@ -25,7 +25,7 @@ def create_app():
 
     app = FastAPI(
         title=default_config.app.title,
-        description="Reliable Explainable Multimodal Planning with Formal Verification and Counterexample-Guided Repair",
+        description="Reliable Explainable Multi-Domain Planning with Formal Verification and Counterexample-Guided Repair",
         version="0.1.0",
     )
 

@@ -60,39 +60,39 @@ class FaultAttributionEngine:
                         break
 
         # 2. Evidence Check: PERCEPTION_ERROR
-        # Check discrepancy between observed/perceived facts and true symbolic reality
+        # Check discrepancy between supplied observed facts and symbolic ground truth.
         if observed_facts is not None and ground_truth_facts is not None:
             obs_set = {(f.predicate.lower(), tuple(f.arguments), f.is_negated) for f in observed_facts}
             gt_set = {(f.predicate.lower(), tuple(f.arguments), f.is_negated) for f in ground_truth_facts}
 
-            # Check if the violated condition was falsely believed to hold due to perception
+            # Check whether the observation incorrectly asserted or omitted the condition.
             v_tuple = (
                 counterexample.violated_condition.predicate.lower(),
                 tuple(counterexample.violated_condition.arguments),
                 counterexample.violated_condition.is_negated,
             )
 
-            # Hallucinated fact: in perception but not in ground truth
+            # Asserted fact: present in the observation but absent from ground truth.
             if v_tuple in obs_set and v_tuple not in gt_set:
                 detected_hypotheses[FaultClass.PERCEPTION_ERROR] = {
                     "confidence": 0.90,
-                    "affected_stage": "Perception / Vision",
+                    "affected_stage": "Observed State Input",
                     "evidence": [
-                        f"Perception falsely reported '{counterexample.violated_condition.to_string()}' as holding, "
+                        f"The supplied observation reported '{counterexample.violated_condition.to_string()}' as holding, "
                         f"which does not exist in ground truth environment state."
                     ],
-                    "explanation": "The failure stems from a perceptual error where the vision system reported a false condition.",
+                    "explanation": "The supplied observed state contains a fact that conflicts with symbolic ground truth.",
                 }
-            # Missed fact: in ground truth but missed by perception
+            # Omitted fact: present in ground truth but absent from the observation.
             elif v_tuple not in obs_set and v_tuple in gt_set:
                 detected_hypotheses[FaultClass.PERCEPTION_ERROR] = {
                     "confidence": 0.88,
-                    "affected_stage": "Perception / Vision",
+                    "affected_stage": "Observed State Input",
                     "evidence": [
-                        f"Perception failed to detect condition '{counterexample.violated_condition.to_string()}' "
+                        f"The supplied observation omitted condition '{counterexample.violated_condition.to_string()}' "
                         f"which was present in ground truth environment."
                     ],
-                    "explanation": "The failure stems from incomplete visual perception missing a required condition.",
+                    "explanation": "The supplied observed state is missing a fact present in symbolic ground truth.",
                 }
 
         # 3. Evidence Check: FORMALIZATION_ERROR

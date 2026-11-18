@@ -2,7 +2,6 @@
 
 import pytest
 from pydantic import ValidationError
-from PIL import Image
 
 from core.actions.domain import create_blocks_world_domain
 from core.contracts import (
@@ -23,7 +22,6 @@ from core.world.state import SymbolicState
 from core.world.types import ObjectRegistry
 from interpretation.llm.mock import MockLLMProvider
 from interpretation.validator.validator import ConsistencyValidator
-from interpretation.vision.detector import DeterministicSceneDetector
 
 
 def make_problem(domain, objects: dict[str, str], init_facts, goal_facts) -> SymbolicProblem:
@@ -212,14 +210,6 @@ class TestEdgeCases:
         f = FactSchema(predicate="on", arguments=("b1", "b2"))
         with pytest.raises(ValidationError):
             f.predicate = "something_else"  # type: ignore
-
-    def test_empty_image_perception(self):
-        """A plain blank white image with no blocks."""
-        img = Image.new("RGB", (400, 400), color=(255, 255, 255))
-        detector = DeterministicSceneDetector()
-        detected = detector.detect(img)
-        # No blocks detected on pure white canvas
-        assert len(detected.detected_objects) == 0
 
     def test_irrelevant_vs_critical_environment_change(self):
         """Differentiates environment changes that break the plan vs those that do not."""

@@ -1,4 +1,4 @@
-"""Section 19.4: Happy-Path Scenarios H1 through H8."""
+"""Section 19.4: Happy-Path Scenarios H1 through H7."""
 
 import pytest
 from app.services.pipeline import PipelineOrchestrator
@@ -13,8 +13,6 @@ from core.world.predicates import Fact
 from core.world.problem import SymbolicProblem
 from core.world.state import SymbolicState
 from core.world.types import ObjectRegistry
-from interpretation.vision.detector import DeterministicSceneDetector
-from interpretation.vision.scene_generator import SyntheticSceneGenerator
 
 
 def make_problem(name: str, domain, objects: dict[str, str], init_facts, goal_facts) -> SymbolicProblem:
@@ -32,7 +30,7 @@ def make_problem(name: str, domain, objects: dict[str, str], init_facts, goal_fa
 
 
 class TestHappyPathScenarios:
-    """Verifies all normal operating modes H1 to H8."""
+    """Verifies all normal operating modes H1 to H7."""
 
     def test_scenario_h1_simple_valid_planning(self):
         """H1: Simple valid planning problem (1-2 steps)."""
@@ -163,31 +161,8 @@ class TestHappyPathScenarios:
         assert res.final_plan is not None
         assert len(res.final_plan.actions) > 0
 
-    def test_scenario_h7_visual_observation_to_plan(self):
-        """H7: Visual observation -> symbolic world state -> plan."""
-        gen = SyntheticSceneGenerator(width=400, height=400)
-        blocks = [
-            {"name": "red_box", "color": "red", "shape": "box"},
-            {"name": "blue_box", "color": "blue", "shape": "box"},
-        ]
-        scene = gen.generate_tabletop_scene(blocks)
-
-        detector = DeterministicSceneDetector()
-        detected = detector.detect(scene.image)
-        assert len(detected.detected_objects) >= 2
-
-        orchestrator = PipelineOrchestrator()
-        res = orchestrator.run(
-            prompt="Stack the red box on the blue box.",
-            image=scene.image,
-            algorithm="A*",
-        )
-        assert res.has_image is True
-        assert res.final_plan is not None
-        assert res.final_verification.is_valid is True
-
-    def test_scenario_h8_dynamic_environment_reactive_replanning(self):
-        """H8: Dynamic environment -> plan invalidation -> replanning."""
+    def test_scenario_h7_dynamic_environment_reactive_replanning(self):
+        """H7: Dynamic environment -> plan invalidation -> replanning."""
         domain = create_blocks_world_domain()
         init_facts = [
             Fact("on_table", ["b1"]),
@@ -197,7 +172,7 @@ class TestHappyPathScenarios:
             Fact("handempty", []),
         ]
         goal = [Fact("on", ["b1", "b2"])]
-        problem = make_problem("H8_Dynamic", domain, {"b1": "block", "b2": "block"}, init_facts, goal)
+        problem = make_problem("H7_Dynamic", domain, {"b1": "block", "b2": "block"}, init_facts, goal)
 
         planner = AStarPlanner()
         plan = planner.search(problem, domain)
