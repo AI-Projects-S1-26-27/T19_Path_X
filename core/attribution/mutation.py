@@ -48,7 +48,7 @@ class FaultInjector:
     def inject_perception_error(
         self, true_facts: Sequence[FactSchema]
     ) -> Tuple[List[FactSchema], List[FactSchema]]:
-        """Simulates perceptual error by hallucinating a non-existent fact or dropping a real fact."""
+        """Simulate an incorrect supplied observation by changing the symbolic facts."""
         gt_facts = list(true_facts)
         perceived_facts = list(true_facts)
 
