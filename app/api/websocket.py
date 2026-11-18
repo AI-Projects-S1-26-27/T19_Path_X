@@ -557,7 +557,7 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
             trace.total_attempts = sum(1 for s in trace.stage_trace if s.stage == "INTERPRET")
 
             await emit("FINAL_VERIFICATION",
-                f"Final plan formally verified ({len(final_plan.actions)} actions). Verification is complete.",
+                f"Final plan formally verified ({len(final_plan.actions)} actions). Ready for execution.",
                 {
                     "is_valid": final_verif.is_valid,
                     "final_plan": [a.model_dump() for a in final_plan.actions],
