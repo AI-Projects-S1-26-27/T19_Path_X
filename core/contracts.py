@@ -263,34 +263,8 @@ class ProposalValidationResult(BaseModel):
 
 
 # ==============================================================================
-# 7. Vision Contracts
 # ==============================================================================
-
-class BoundingBox(BaseModel):
-    x: int
-    y: int
-    width: int
-    height: int
-
-
-class DetectedObject(BaseModel):
-    name: str
-    object_type: str
-    color: str
-    shape: str
-    bbox: BoundingBox
-    attributes: Dict[str, Any] = Field(default_factory=dict)
-
-
-class VisualSceneProposal(BaseModel):
-    scene_id: str
-    detected_objects: List[DetectedObject] = Field(default_factory=list)
-    extracted_facts: List[FactSchema] = Field(default_factory=list)
-    confidence: float = 1.0
-
-
-# ==============================================================================
-# 8. Dynamic Environment Contracts
+# 7. Dynamic Environment Contracts
 # ==============================================================================
 
 class WorldDeltaSchema(BaseModel):
