@@ -1,0 +1,596 @@
+"""WebSocket router for live event-driven pipeline streaming.
+
+Updated for Retry Tree architecture — streams each stage attempt,
+retry, cascade, and backtrack event to the frontend in real-time.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import time
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from app.services.pipeline import PipelineOrchestrator, PLANNER_CASCADE
+from app.services.problem_builder import ProblemBuildResult, ValidatedProblemBuilder
+from core.contracts import (
+    GroundActionSchema,
+    PipelineDecisionTrace,
+    PipelineStageStatus,
+    PlanSchema,
+    ProposalValidationResult,
+    StageAttemptRecord,
+    ValidationStatus,
+    VerificationResultSchema,
+)
+from core.logger import get_logger
+from interpretation.router import DomainRouter, RoutingOutcome
+
+logger = get_logger("websocket_router")
+router = APIRouter()
+orchestrator = PipelineOrchestrator()
+
+
+@router.websocket("/ws/pipeline")
+async def websocket_pipeline_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        req = await websocket.receive_json()
+        prompt = req.get("prompt", "Move the red box next to the blue box. Do not move the glass.")
+        algorithm = req.get("algorithm", "fastest")
+        force_fault = bool(req.get("force_fault", False))
+        provider_type = req.get("provider_type", os.environ.get("LLM_PROVIDER", "gemini"))
+        llm_model = req.get("llm_model")
+        # 1-second demonstration pacing (requested by user for clear live presentation)
+        step_delay = float(req.get("step_delay", 0.9))
+
+        async def emit(stage: str, message: str, data: Optional[Dict[str, Any]] = None):
+            await websocket.send_json({
+                "stage": stage,
+                "timestamp": time.time(),
+                "message": message,
+                "data": data or {},
+            })
+            if step_delay > 0:
+                await asyncio.sleep(step_delay)
+
+        fault_state = "enabled" if force_fault else "disabled"
+        await emit("PIPELINE_STARTED", f"Initializing Retry Tree pipeline. Initial-plan fault injection: {fault_state}.", {
+            "prompt": prompt,
+            "architecture": "retry_tree",
+            "force_fault": force_fault,
+            "provider_type": provider_type,
+            "algorithm": algorithm,
+            "enumerate_graph": bool(req.get("enumerate_graph", True)),
+            "max_nodes": req.get("max_nodes", 250),
+        })
+
+        # ──── Domain Routing & Clarification Check ─────────────────────
+        from core.domains import registry
+        routing = None
+        target_domain_id = req.get("domain_id", "auto")
+        if target_domain_id == "auto":
+            router = DomainRouter(registry=registry)
+            routing = router.route(prompt)
+
+            if routing.outcome == RoutingOutcome.NEEDS_CLARIFICATION:
+                await emit("CLARIFICATION_REQUIRED", routing.clarification_question or "Clarification required.", {
+                    "question": routing.clarification_question,
+                    "explanation": routing.explanation,
+                })
+                return
+
+            if routing.outcome == RoutingOutcome.UNSUPPORTED:
+                await emit("TASK_UNSUPPORTED", routing.explanation, {
+                    "explanation": routing.explanation,
+                })
+                return
+
+            if routing.outcome == RoutingOutcome.INVALID_PROPOSAL:
+                await emit("TASK_INVALID", routing.explanation, {
+                    "explanation": routing.explanation,
+                })
+                return
+
+            if routing.outcome != RoutingOutcome.SUPPORTED or not routing.selected_domain_id:
+                await emit("TASK_UNSUPPORTED", routing.explanation or "Prompt cannot be routed to a supported domain.", {
+                    "explanation": routing.explanation,
+                })
+                return
+
+            target_domain_id = routing.selected_domain_id
+            await emit("DOMAIN_SELECTED", f"Routed instruction to domain '{target_domain_id}' (confidence: {routing.domain_confidence:.2f}).", {
+                "domain_id": target_domain_id,
+                "confidence": routing.domain_confidence,
+            })
+
+        target_domain = registry.get(target_domain_id)
+        if not target_domain:
+            await emit("ERROR", f"Requested domain '{target_domain_id}' is not registered.", {
+                "domain_id": target_domain_id,
+            })
+            return
+
+        if routing is None:
+            explicit_routing = DomainRouter(registry=registry).route(
+                prompt, explicit_domain_id=target_domain.domain_id
+            )
+            if explicit_routing.outcome == RoutingOutcome.SUPPORTED:
+                routing = explicit_routing
+
+        # ──── Resolve Provider ─────────────────────────────────────────
+        resolved_provider = "auto" if provider_type == "default" else provider_type
+        is_live = resolved_provider and resolved_provider != "mock"
+        if is_live:
+            from interpretation.llm.live import LiveLLMProvider
+            active_provider = LiveLLMProvider(provider=resolved_provider, model=llm_model)
+        else:
+            active_provider = orchestrator.llm_provider
+
+        builder = getattr(orchestrator, "problem_builder", None) or ValidatedProblemBuilder(
+            validator=orchestrator.validator,
+            llm_provider=orchestrator.llm_provider,
+        )
+
+        trace = PipelineDecisionTrace()
+        last_validation_errors: Optional[List[str]] = None
+
+        for backtrack_idx in range(orchestrator.max_backtracks + 1):
+            if backtrack_idx > 0:
+                await emit("BACKTRACK", f"Backtracking to re-interpret (attempt {backtrack_idx + 1})...", {
+                    "backtrack_number": backtrack_idx,
+                    "reason": "; ".join(last_validation_errors) if last_validation_errors else "Unknown",
+                })
+
+            # ─── Stage 1: Interpretation ───────────────────────────────
+            await emit("INTERPRETATION_STARTED", "Formalizing natural language into symbolic schema...")
+
+            t0 = time.perf_counter()
+            provider_name = provider_type
+            try:
+                if hasattr(active_provider, 'interpret_with_retry'):
+                    proposal, provider_name = await asyncio.to_thread(
+                        active_provider.interpret_with_retry,
+                        prompt=prompt,
+                        domain=target_domain,
+                        validation_errors=last_validation_errors,
+                    )
+                else:
+                    proposal = await asyncio.to_thread(active_provider.interpret, prompt, target_domain)
+                t_interp_ms = (time.perf_counter() - t0) * 1000.0
+
+                trace.stage_trace.append(StageAttemptRecord(
+                    stage="INTERPRET",
+                    attempt=backtrack_idx + 1,
+                    status=PipelineStageStatus.SUCCESS,
+                    provider_used=provider_name,
+                    duration_ms=t_interp_ms,
+                    recovery_action="retry_with_feedback" if last_validation_errors else None,
+                ))
+                trace.interpretation_attempts += 1
+
+            except Exception as e:
+                t_interp_ms = (time.perf_counter() - t0) * 1000.0
+                # Fallback to mock
+                proposal = orchestrator.llm_provider.interpret(prompt, target_domain)
+                provider_name = "mock_fallback"
+                trace.stage_trace.append(StageAttemptRecord(
+                    stage="INTERPRET",
+                    attempt=backtrack_idx + 1,
+                    status=PipelineStageStatus.FAILED,
+                    provider_used=provider_type,
+                    duration_ms=t_interp_ms,
+                    error=str(e),
+                    recovery_action="mock_fallback",
+                ))
+
+            # Merge router-derived safety constraints even if the LLM supplied
+            # some constraints of its own; the proposal remains untrusted.
+            if routing is not None:
+                for constraint in routing.typed_constraints:
+                    if constraint not in proposal.typed_constraints:
+                        proposal.typed_constraints.append(constraint)
+                for constraint in routing.negative_constraints:
+                    if constraint not in proposal.negative_constraints:
+                        proposal.negative_constraints.append(constraint)
+
+            # ─── Stage 2: Validation & Problem Construction ───────────
+            t1 = time.perf_counter()
+            build_res = builder.build_from_proposal(proposal, target_domain, routing_result=routing)
+            t_val_ms = (time.perf_counter() - t1) * 1000.0
+
+            is_valid = build_res.validation_result.is_valid if build_res.validation_result else build_res.is_success
+            await emit("INTERPRETATION_COMPLETED",
+                f"Task formalized in {t_interp_ms:.1f} ms. Schema valid: {is_valid}.",
+                {
+                    "entities": proposal.entities,
+                    "goal_facts": [f.model_dump() for f in proposal.goal_facts],
+                    "initial_facts": [f.model_dump() for f in proposal.initial_facts],
+                    "negative_constraints": [f.model_dump() for f in proposal.negative_constraints],
+                    "typed_constraints": [tc.model_dump() for tc in getattr(proposal, "typed_constraints", [])],
+                    "is_valid": is_valid,
+                    "provider_used": provider_name,
+                    "stage_duration_ms": round(t_interp_ms, 2),
+                    "validation_duration_ms": round(t_val_ms, 2),
+                })
+
+            if not build_res.is_success:
+                if build_res.status == "INVALID":
+                    errors = build_res.validation_result.errors if build_res.validation_result else [build_res.error_message or "Unknown validation error"]
+                    if backtrack_idx < orchestrator.max_backtracks:
+                        last_validation_errors = errors
+                        trace.backtracks += 1
+                        trace.recovery_path.append(f"backtrack_validation_{backtrack_idx + 1}")
+                        await emit("VALIDATION_FAILED",
+                            f"Validation failed: {errors}. Backtracking to re-interpret...",
+                            {"errors": errors, "will_retry": True})
+                        continue  # ← BACKTRACK
+
+                    await emit("ERROR", f"Symbolic consistency validation failed after {trace.backtracks} retries: {errors}", {})
+                    return
+
+                if build_res.status == "INVARIANT_VIOLATION":
+                    await emit("INITIAL_STATE_INVARIANT_VIOLATION", f"Initial state violates invariants: {build_res.error_message}", {
+                        "error": build_res.error_message,
+                    })
+                    return  # MANDATORY TERMINAL RETURN: NEVER proceed to graph enumeration or planner search!
+
+                await emit("ERROR", build_res.error_message or f"Problem building failed with status {build_res.status}", {
+                    "status": build_res.status,
+                })
+                return
+
+            problem = build_res.problem
+            assert problem is not None, "SymbolicProblem must not be None when build_res.is_success is True"
+
+            # ─── Stage 2.5: Model B Complete Reachable-State Graph Enumeration
+            if req.get("enumerate_graph", True):
+                await emit("GRAPH_ENUMERATION_STARTED", "Enumerating complete reachable state space (Model B)...")
+                try:
+                    from core.graph.enumerator import CompleteReachableGraphEnumerator
+                    from core.graph.resource_limits import GraphBudgetConfig, graph_concurrency_manager
+
+                    raw_nodes = req.get("max_nodes", 250)
+                    raw_edges = req.get("max_edges", 800)
+                    raw_timeout = req.get("graph_timeout", req.get("timeout_seconds", 3.0))
+
+                    budget = GraphBudgetConfig(
+                        max_nodes=raw_nodes,
+                        max_edges=raw_edges,
+                        timeout_seconds=raw_timeout,
+                    )
+
+                    if not graph_concurrency_manager.acquire():
+                        await emit("GRAPH_ENUMERATION_TRUNCATED", "Graph enumeration skipped: server concurrency capacity exceeded.", {
+                            "truncation_reason": "CONCURRENCY_CAPACITY_EXCEEDED"
+                        })
+                    else:
+                        try:
+                            enumerator = CompleteReachableGraphEnumerator(
+                                max_nodes=budget.max_nodes,
+                                max_edges=budget.max_edges,
+                                timeout_seconds=budget.timeout_seconds,
+                            )
+                            graph = await asyncio.to_thread(enumerator.enumerate_graph, problem, target_domain)
+                        finally:
+                            graph_concurrency_manager.release()
+
+                        # Stream nodes in batches of 30 to avoid socket flooding
+                        node_list = list(graph.nodes.values())
+                        batch_size = 30
+                        for i in range(0, len(node_list), batch_size):
+                            batch = [n.model_dump() for n in node_list[i : i + batch_size]]
+                            await emit("GRAPH_NODE_BATCH", f"Streamed {len(batch)} reachable states...", {"nodes": batch, "offset": i, "total": len(node_list)})
+
+                        # Stream edges in batches of 50
+                        edge_list = graph.edges
+                        edge_batch_size = 50
+                        for i in range(0, len(edge_list), edge_batch_size):
+                            batch = [e.model_dump() for e in edge_list[i : i + edge_batch_size]]
+                            await emit("GRAPH_EDGE_BATCH", f"Streamed {len(batch)} valid transitions...", {"edges": batch, "offset": i, "total": len(edge_list)})
+
+                        graph_stage = "GRAPH_ENUMERATION_COMPLETED" if graph.stats.is_complete else "GRAPH_ENUMERATION_TRUNCATED"
+                        status_msg = f"Reachable graph complete ({graph.stats.total_nodes} states, {graph.stats.total_edges} transitions)." if graph.stats.is_complete else f"Reachable graph truncated ({graph.stats.truncation_reason}): {graph.stats.total_nodes} states explored."
+                        await emit(graph_stage, status_msg, {
+                            "stats": graph.stats.model_dump(),
+                            "is_complete": graph.stats.is_complete,
+                            "truncation_reason": graph.stats.truncation_reason,
+                            "goal_count": len(graph.stats.goal_node_ids),
+                            "dead_end_count": len(graph.stats.dead_end_node_ids),
+                        })
+                except Exception as ex:
+                    logger.warning(f"Graph enumeration streaming warning: {ex}")
+                    await emit("GRAPH_ENUMERATION_TRUNCATED", f"Graph enumeration failed: {str(ex)}", {
+                        "truncation_reason": f"ERROR: {str(ex)}"
+                    })
+
+            is_fastest_mode = algorithm.lower() in ("auto", "fastest", "fastest_optimized", "fastest_optimal")
+            search_benchmark_data = []
+
+            if is_fastest_mode:
+                candidate_planners = ["A*", "BFS", "BEST_FIRST"]
+                successful_candidates = []
+
+                for algo_name in candidate_planners:
+                    t_start = time.perf_counter()
+                    try:
+                        p = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
+                        plan_result = await asyncio.to_thread(p.search, problem, target_domain)
+                        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+
+                        entry = {
+                            "algorithm": algo_name,
+                            "duration_ms": round(elapsed_ms, 2),
+                            "cost": plan_result.total_cost if plan_result.is_success else -1,
+                            "nodes_expanded": plan_result.nodes_expanded,
+                            "is_success": plan_result.is_success,
+                            "is_winner": False,
+                        }
+                        search_benchmark_data.append(entry)
+                        if plan_result.is_success:
+                            successful_candidates.append((elapsed_ms, plan_result.total_cost, algo_name, plan_result, entry))
+                    except Exception as ex:
+                        elapsed_ms = (time.perf_counter() - t_start) * 1000.0
+                        search_benchmark_data.append({
+                            "algorithm": algo_name,
+                            "duration_ms": round(elapsed_ms, 2),
+                            "cost": -1,
+                            "nodes_expanded": 0,
+                            "is_success": False,
+                            "is_winner": False,
+                        })
+
+                if successful_candidates:
+                    # Select the fastest search algorithm to reach the final goal state
+                    successful_candidates.sort(key=lambda x: (x[0], x[1]))
+                    best_time, best_cost, best_algo, best_res, best_entry = successful_candidates[0]
+                    best_entry["is_winner"] = True
+                    candidate = best_res
+                    used_algorithm = best_algo
+                    t_plan_ms = best_time
+                    planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(best_algo)
+                    planner_idx = 0
+                    trace.stage_trace.append(StageAttemptRecord(
+                        stage="PLAN",
+                        attempt=1,
+                        status=PipelineStageStatus.SUCCESS,
+                        provider_used=f"{used_algorithm} (fastest measured)",
+                        duration_ms=t_plan_ms,
+                        recovery_action=None,
+                    ))
+                else:
+                    candidate = None
+                    used_algorithm = "A*"
+                    t_plan_ms = 0.0
+            else:
+                cascade = [algorithm]
+                for alt in PLANNER_CASCADE:
+                    if alt.upper() != algorithm.upper() and alt not in cascade:
+                        cascade.append(alt)
+
+                candidate = None
+                used_algorithm = algorithm
+                planner = None
+
+                for planner_idx, algo_name in enumerate(cascade):
+                    if planner_idx > 0:
+                        await emit("PLANNER_CASCADE", f"Cascading to {algo_name} planner...", {
+                            "algorithm": algo_name, "cascade_step": planner_idx + 1,
+                        })
+
+                    t2 = time.perf_counter()
+                    try:
+                        planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(algo_name)
+                        plan_result = await asyncio.to_thread(planner.search, problem, target_domain)
+                        t_plan_ms = (time.perf_counter() - t2) * 1000.0
+
+                        if plan_result.is_success:
+                            candidate = plan_result
+                            used_algorithm = algo_name
+                            trace.stage_trace.append(StageAttemptRecord(
+                                stage="PLAN",
+                                attempt=planner_idx + 1,
+                                status=PipelineStageStatus.SUCCESS,
+                                provider_used=algo_name,
+                                duration_ms=t_plan_ms,
+                                recovery_action="planner_cascade" if planner_idx > 0 else None,
+                            ))
+                            if planner_idx > 0:
+                                trace.planner_cascades += 1
+                            break
+                        else:
+                            trace.stage_trace.append(StageAttemptRecord(
+                                stage="PLAN",
+                                attempt=planner_idx + 1,
+                                status=PipelineStageStatus.FAILED,
+                                provider_used=algo_name,
+                                duration_ms=t_plan_ms,
+                                error=plan_result.failure_reason,
+                            ))
+                    except Exception as e:
+                        t_plan_ms = (time.perf_counter() - t2) * 1000.0
+                        trace.stage_trace.append(StageAttemptRecord(
+                            stage="PLAN",
+                            attempt=planner_idx + 1,
+                            status=PipelineStageStatus.FAILED,
+                            provider_used=algo_name,
+                            duration_ms=t_plan_ms,
+                            error=str(e),
+                        ))
+
+            if candidate is None:
+                if backtrack_idx < orchestrator.max_backtracks:
+                    last_validation_errors = ["All planners failed. Please simplify goals or check entity names."]
+                    trace.backtracks += 1
+                    trace.recovery_path.append(f"backtrack_planning_{backtrack_idx + 1}")
+                    await emit("PLANNING_FAILED", "All planners exhausted. Backtracking to re-interpret...", {
+                        "will_retry": True,
+                    })
+                    continue  # ← BACKTRACK
+
+                await emit("ERROR", "All planners exhausted after all backtracks.", {})
+                return
+
+            # Force fault for demonstration
+            if force_fault and candidate.actions:
+                mutated_actions = list(candidate.actions)
+                if len(mutated_actions) >= 2:
+                    mutated_actions[0], mutated_actions[1] = mutated_actions[1], mutated_actions[0]
+                else:
+                    mutated_actions = [GroundActionSchema(name="stack", arguments=("red_box", "blue_box"))]
+                candidate = PlanSchema(
+                    actions=mutated_actions,
+                    algorithm="DemonstrationCandidate",
+                    total_cost=candidate.total_cost,
+                )
+
+            search_msg = (
+                f"Candidate plan found via {used_algorithm} [fastest measured of A*, BFS, and Greedy Best-First: {t_plan_ms:.2f} ms | {len(candidate.actions)} actions, cost: {candidate.total_cost}]."
+                if is_fastest_mode
+                else f"Candidate plan found via {used_algorithm} in {t_plan_ms:.1f} ms ({len(candidate.actions)} actions, cost: {candidate.total_cost})."
+            )
+
+            await emit("SEARCH_COMPLETED",
+                search_msg,
+                {
+                    "actions": [a.model_dump() for a in candidate.actions],
+                    "cost": candidate.total_cost,
+                    "algorithm": used_algorithm,
+                    "is_fastest_mode": is_fastest_mode,
+                    "search_benchmark": search_benchmark_data if is_fastest_mode else None,
+                    "cascade_steps": planner_idx + 1 if planner_idx else 1,
+                    "stage_duration_ms": round(t_plan_ms, 2),
+                })
+
+            # ─── Stage 4: Verification ────────────────────────────────
+            t3 = time.perf_counter()
+            v_res = orchestrator.verifier.verify(problem, target_domain, candidate)
+            t_verif_ms = (time.perf_counter() - t3) * 1000.0
+
+            final_plan = candidate
+            final_verif = v_res
+            t_repair_ms = 0.0
+
+            if not v_res.is_valid:
+                await emit("VERIFICATION_FAILED",
+                    f"Initial candidate failed verification in {t_verif_ms:.1f} ms at step {v_res.failed_step_index}.",
+                    {
+                        "failed_step": v_res.failed_step_index,
+                        "explanation": v_res.explanation,
+                        "stage_duration_ms": round(t_verif_ms, 2),
+                    })
+
+                # Counterexample & Attribution
+                cex = orchestrator.cex_generator.generate(v_res, problem)
+                if cex:
+                    await emit("COUNTEREXAMPLE_EXTRACTED", "Minimal counterexample witness isolated.", {
+                        "witness": cex.model_dump()
+                    })
+                    attribution = orchestrator.attribution_engine.attribute(
+                        counterexample=cex,
+                        problem=problem,
+                        candidate_plan=candidate,
+                        natural_language_prompt=prompt,
+                    )
+                    if attribution:
+                        await emit("ATTRIBUTION_CLASSIFIED", f"Fault attributed to {attribution.fault_class}.", {
+                            "fault_class": attribution.fault_class,
+                            "affected_stage": attribution.affected_stage,
+                            "confidence": attribution.confidence,
+                        })
+
+                # ─── Stage 5: CEGIS Repair Loop ───────────────────────
+                t4 = time.perf_counter()
+                if 'planner' not in locals() or planner is None:
+                    planner = __import__('core.search.algorithms', fromlist=['get_planner_by_name']).get_planner_by_name(used_algorithm or "A*")
+                orchestrator.replanning_engine.planner = planner
+                replan_res = await asyncio.to_thread(
+                    orchestrator.replanning_engine.run_repair_loop,
+                    problem=problem,
+                    domain=target_domain,
+                    initial_candidate=candidate,
+                    natural_language_prompt=prompt,
+                )
+                t_repair_ms = (time.perf_counter() - t4) * 1000.0
+
+                if replan_res.success:
+                    final_plan = replan_res.repaired_plan
+                    final_verif = replan_res.final_verification or v_res
+                    await emit("REPAIR_INJECTED",
+                        f"CEGIS repair converged in {t_repair_ms:.1f} ms (iterations: {replan_res.iterations}).",
+                        {
+                            "iterations": replan_res.iterations,
+                            "repairs_applied": [r.model_dump() for r in replan_res.repairs_applied],
+                            "stage_duration_ms": round(t_repair_ms, 2),
+                        })
+                else:
+                    # Repair failed — try backtrack
+                    if backtrack_idx < orchestrator.max_backtracks:
+                        last_validation_errors = [
+                            f"Repair loop failed ({replan_res.status}). "
+                            "Please re-check entity relationships."
+                        ]
+                        trace.backtracks += 1
+                        trace.recovery_path.append(f"backtrack_repair_{backtrack_idx + 1}")
+                        await emit("REPAIR_FAILED",
+                            f"Repair failed ({replan_res.status}). Backtracking to re-interpret...",
+                            {"will_retry": True})
+                        continue  # ← BACKTRACK
+
+                    final_plan = replan_res.repaired_plan or candidate
+                    final_verif = replan_res.final_verification or v_res
+                    await emit("REPAIR_INJECTED",
+                        f"CEGIS repair did not converge ({replan_res.status}) in {t_repair_ms:.1f} ms.",
+                        {"status": replan_res.status, "stage_duration_ms": round(t_repair_ms, 2)})
+
+            else:
+                await emit("VERIFICATION_RESULT",
+                    f"Candidate plan verified in {t_verif_ms:.1f} ms. All invariants satisfied.",
+                    {"is_valid": True, "stage_duration_ms": round(t_verif_ms, 2)})
+
+            # ─── Final Verification & Finish ──────────────────────────
+            total_time_ms = t_interp_ms + t_val_ms + t_plan_ms + t_verif_ms + t_repair_ms
+
+            trace.final_provider = provider_name
+            trace.final_algorithm = used_algorithm
+            trace.total_attempts = sum(1 for s in trace.stage_trace if s.stage == "INTERPRET")
+
+            await emit("FINAL_VERIFICATION",
+                f"Final plan formally verified ({len(final_plan.actions)} actions). Ready for execution.",
+                {
+                    "is_valid": final_verif.is_valid,
+                    "final_plan": [a.model_dump() for a in final_plan.actions],
+                    "execution_time_ms": round(total_time_ms, 2),
+                    "decision_trace": {
+                        "backtracks": trace.backtracks,
+                        "planner_cascades": trace.planner_cascades,
+                        "interpretation_attempts": trace.interpretation_attempts,
+                        "recovery_path": trace.recovery_path,
+                        "final_provider": trace.final_provider,
+                        "final_algorithm": trace.final_algorithm,
+                    },
+                })
+
+            await emit("PIPELINE_FINISHED", "Pipeline execution finished.", {
+                "total_execution_time_ms": round(total_time_ms, 2),
+            })
+            return  # ← SUCCESS, exit the backtrack loop
+
+        # All backtracks exhausted
+        await emit("ERROR", "Pipeline exhausted all backtrack attempts.", {
+            "backtracks": trace.backtracks,
+        })
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected.")
+    except Exception as e:
+        logger.error(f"WebSocket execution error: {e}")
+        try:
+            await websocket.send_json({"stage": "ERROR", "message": str(e), "data": {}})
+        except Exception:
+            pass
+
+
+# Export alias for compatibility
+handle_websocket_pipeline = websocket_pipeline_endpoint

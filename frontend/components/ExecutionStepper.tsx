@@ -1,0 +1,344 @@
+"use client";
+
+import React from "react";
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  ShieldCheck,
+  Sparkles,
+  AlertTriangle,
+  GitBranch,
+  RefreshCw,
+  Layers,
+} from "lucide-react";
+import { PipelineAccumulatedState } from "../hooks/usePipelineWebSocket";
+import { CounterexampleCard } from "./CounterexampleCard";
+import { RepairCard } from "./RepairCard";
+
+interface ExecutionStepperProps {
+  state: PipelineAccumulatedState;
+  isStreaming: boolean;
+}
+
+function providerLabel(provider: string): string {
+  const normalized = provider.toLowerCase().split(":", 1)[0];
+  if (normalized === "openrouter") return "OpenRouter";
+  if (normalized === "nvidia") return "NVIDIA NIM Cloud";
+  if (normalized === "gemini") return "Gemini API";
+  if (normalized.includes("mock")) return "Configured fallback";
+  return provider;
+}
+
+export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) {
+  const hasStarted = Boolean(state.prompt);
+
+  if (!hasStarted) {
+    return (
+      <div className="flex min-h-[220px] flex-col items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/30 p-8 text-center">
+        <Sparkles className="mb-3 h-8 w-8 text-slate-600" />
+        <h3 className="font-mono text-sm font-semibold text-slate-400">Pipeline Idle</h3>
+        <p className="mt-1 max-w-sm text-xs text-slate-500">
+          Select a capability preset or enter an instruction, then click{" "}
+          <strong className="text-cyan-400">Run Formal Planning Pipeline</strong> to watch real-time execution.
+        </p>
+      </div>
+    );
+  }
+
+  const backtracks = state.backtrackCount || (state.decisionTrace?.backtracks ?? 0);
+  const cascades = state.cascadeCount || (state.decisionTrace?.planner_cascades ?? 0);
+  const provider = providerLabel(state.providerUsed || state.decisionTrace?.final_provider || "Configured provider");
+  const isFastest = Boolean(state.isFastestSearchMode || state.requestedAlgorithm?.includes("Fastest"));
+  const isPlanFound = state.candidatePlan.length > 0;
+  const algorithm = state.plannerAlgorithm || state.requestedAlgorithm || state.decisionTrace?.final_algorithm || (isFastest ? "Fastest measured" : "Authoritative Search");
+  const algorithmLabel = algorithm.toUpperCase().replaceAll("_", " ") === "BEST FIRST"
+    ? "Greedy Best-First"
+    : algorithm;
+
+  return (
+    <div className="flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5 shadow-xl backdrop-blur-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+        <div className="flex items-center gap-2">
+          <Clock className="h-4 w-4 text-cyan-400" />
+          <h3 className="font-mono text-xs font-semibold uppercase tracking-wider text-slate-200">
+            Live Execution Trace
+          </h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-xs font-bold text-emerald-400">
+            {state.executionTimeMs > 0 ? `${state.executionTimeMs.toFixed(1)} ms` : "Streaming..."}
+          </span>
+        </div>
+      </div>
+
+      {/* Decision Tree Architecture Badge Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-indigo-500/20 bg-indigo-950/20 p-2.5 px-3 text-xs">
+        <div className="flex items-center gap-2">
+          <GitBranch className="h-4 w-4 text-indigo-400" />
+          <span className="font-mono text-[11px] font-semibold text-indigo-300">
+            DECISION TREE: RETRY & CASCADE
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 font-mono text-[10px]">
+          <span className="rounded bg-indigo-900/60 px-2 py-0.5 text-indigo-200 border border-indigo-500/30">
+            Provider: {provider}
+          </span>
+          <span className="rounded bg-indigo-900/60 px-2 py-0.5 text-indigo-200 border border-indigo-500/30">
+            Search selection: {isFastest ? (isPlanFound ? `Fastest measured: ${algorithmLabel}` : "Comparing A*, BFS, and Greedy Best-First") : algorithmLabel}
+          </span>
+          {backtracks > 0 ? (
+            <span className="rounded bg-amber-500/20 px-2 py-0.5 text-amber-300 border border-amber-500/40">
+              {backtracks} Backtrack{backtracks > 1 ? "s" : ""}
+            </span>
+          ) : (
+            <span className="rounded bg-slate-800/80 px-2 py-0.5 text-slate-400">
+              0 Backtracks
+            </span>
+          )}
+          {cascades > 0 ? (
+            <span className="rounded bg-purple-500/20 px-2 py-0.5 text-purple-300 border border-purple-500/40">
+              {cascades} Cascade{cascades > 1 ? "s" : ""}
+            </span>
+          ) : (
+            <span className="rounded bg-slate-800/80 px-2 py-0.5 text-slate-400">
+              0 Cascades
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Live Tree Recovery Events (if any occurred) */}
+      {state.treeLog && state.treeLog.length > 0 && (
+        <div className="flex flex-col gap-1.5 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3 text-xs">
+          <div className="flex items-center gap-2 text-amber-300 font-mono text-[11px] font-semibold">
+            <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
+            Decision Tree Fallback & Recovery Events
+          </div>
+          <div className="flex flex-col gap-1 mt-1">
+            {state.treeLog.map((log, idx) => (
+              <div
+                key={idx}
+                className="flex items-start gap-2 rounded bg-slate-900/80 px-2 py-1 font-mono text-[10px] text-slate-300"
+              >
+                <span
+                  className={`font-bold ${
+                    log.type === "recovery"
+                      ? "text-amber-400"
+                      : log.type === "warning"
+                      ? "text-rose-400"
+                      : "text-cyan-400"
+                  }`}
+                >
+                  [{log.stage}]
+                </span>
+                <span>{log.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-4">
+        {/* Step 1: Neural Interpretation */}
+        <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
+          <div className="mt-0.5">
+            {state.isSchemaValid === true ? (
+              <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+            ) : state.isSchemaValid === false ? (
+              <XCircle className="h-5 w-5 text-rose-400" />
+            ) : (
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-400" />
+            )}
+          </div>
+          <div className="flex-1 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-200">1. Neural Interpretation & Validation</span>
+                {state.interpretationTimeMs !== undefined && (
+                  <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
+                    ⚡ {state.interpretationTimeMs.toFixed(1)} ms
+                  </span>
+                )}
+              </div>
+              <span className="font-mono text-[10px] text-slate-400">
+                {provider}
+              </span>
+            </div>
+            {Object.keys(state.entities).length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {Object.entries(state.entities).map(([k, v]) => (
+                  <span
+                    key={k}
+                    className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[11px] text-cyan-300"
+                  >
+                    {k}: {v}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Step 2: Candidate Plan Generation */}
+        <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
+          <div className="mt-0.5">
+            {state.candidatePlan.length > 0 ? (
+              <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+            ) : (
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-400" />
+            )}
+          </div>
+          <div className="flex-1 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-200">
+                  2. Candidate Plan Search {isFastest ? (isPlanFound ? `(Fastest measured: ${algorithmLabel})` : "(Comparing A*, BFS, and Greedy Best-First)") : `(${algorithmLabel})`}
+                </span>
+                {state.searchTimeMs !== undefined && (
+                  <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
+                    ⚡ {state.searchTimeMs.toFixed(1)} ms
+                  </span>
+                )}
+                {isFastest && (
+                  <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
+                    🏆 FASTEST MEASURED
+                  </span>
+                )}
+              </div>
+              <span className="font-mono text-[10px] text-slate-400">
+                {isPlanFound ? `${state.candidatePlan.length} Actions (Cost: ${state.candidateCost})` : "Searching..."}
+              </span>
+            </div>
+
+            {/* Explanation of best optimized search selected */}
+            {state.candidatePlan.length > 0 && state.isFastestSearchMode && (
+              <div className="mt-2 rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-2.5 text-[11px] text-emerald-200">
+                <div className="flex flex-wrap items-center gap-1.5 font-semibold text-emerald-300 mb-1">
+                  <span>🏆 Fastest measured search:</span>
+                  <span className="font-mono font-bold text-white underline decoration-emerald-400">{algorithmLabel}</span>
+                  <span className="text-slate-300 font-normal">
+                    &mdash; lowest measured runtime among the successful candidates ({state.searchTimeMs?.toFixed(1) ?? "0"} ms); this does not mean the shortest or optimal plan.
+                  </span>
+                </div>
+                {state.searchBenchmark && state.searchBenchmark.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                    <span className="text-[10px] text-slate-400 font-mono">Candidate Comparison:</span>
+                    {state.searchBenchmark.map((bench, idx) => (
+                      <span
+                        key={idx}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] border flex items-center gap-1 ${
+                          bench.is_winner
+                            ? "border-emerald-500/60 bg-emerald-900/50 text-emerald-300 font-bold"
+                            : bench.is_success
+                            ? "border-slate-800 bg-slate-900 text-slate-400"
+                            : "border-rose-900/40 bg-rose-950/20 text-rose-400/80"
+                        }`}
+                      >
+                        <span>{bench.algorithm}:</span>
+                        <span>{bench.duration_ms.toFixed(1)} ms</span>
+                        {bench.is_winner && <span>🏆 (Selected)</span>}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {state.candidatePlan.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {state.candidatePlan.map((act, i) => (
+                  <span
+                    key={i}
+                    className="rounded bg-slate-800/80 px-2 py-0.5 font-mono text-[11px] text-slate-300"
+                  >
+                    {i + 1}. {act.name}({(act.arguments || []).join(", ")})
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Step 3: Formal Verification Result */}
+        <div className="flex items-start gap-3 rounded-xl border border-slate-800 bg-slate-950/60 p-3.5">
+          <div className="mt-0.5">
+            {state.initialVerificationPassed === true ? (
+              <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+            ) : state.initialVerificationPassed === false ? (
+              <XCircle className="h-5 w-5 text-rose-400" />
+            ) : (
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-400" />
+            )}
+          </div>
+          <div className="flex-1 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-200">3. Formal State Transition Verification</span>
+                {state.verificationTimeMs !== undefined && (
+                  <span className="rounded border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 font-mono text-[10px] text-cyan-300">
+                    ⚡ {state.verificationTimeMs.toFixed(1)} ms
+                  </span>
+                )}
+              </div>
+              <span
+                className={`font-mono text-[10px] font-bold ${
+                  state.initialVerificationPassed
+                    ? "text-emerald-400"
+                    : state.initialVerificationPassed === false
+                    ? "text-rose-400"
+                    : "text-slate-400"
+                }`}
+              >
+                {state.initialVerificationPassed
+                  ? "VERIFIED SATISFIED"
+                  : state.initialVerificationPassed === false
+                  ? "VIOLATION DETECTED"
+                  : "Checking..."}
+              </span>
+            </div>
+            <p className="mt-1 text-[11px] text-slate-400">
+              The verifier replays each action from the initial state and checks its preconditions, safety constraints, invariants, and final goals.
+            </p>
+            {state.verificationFailureMessage && (
+              <p className="mt-1 font-mono text-[11px] text-rose-300">
+                {state.verificationFailureMessage}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {/* Step 4 & 5: Counterexample Witness & Fault Attribution (if failure occurred) */}
+        {state.counterexample && (
+          <CounterexampleCard witness={state.counterexample} attribution={state.attribution} />
+        )}
+
+        {/* Step 6: Symbolic Repair Card (if repair succeeded) */}
+        {state.repairsApplied && state.repairsApplied.length > 0 && (
+          <RepairCard repairs={state.repairsApplied} finalPlan={state.finalPlan} />
+        )}
+
+        {/* Step 7: Final Verified Plan */}
+        {state.isFinalVerified && (
+          <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-4">
+            <div className="flex items-center gap-3">
+              <ShieldCheck className="h-6 w-6 text-emerald-400" />
+              <div>
+                <h4 className="font-mono text-xs font-bold uppercase tracking-wider text-emerald-300">
+                  Verification is Complete
+                </h4>
+                <p className="text-[11px] text-slate-400">
+                  The final plan passed all modeled precondition, safety-constraint, invariant, and goal checks.
+                </p>
+              </div>
+            </div>
+            <span className="rounded-full bg-emerald-500/20 px-3 py-1 font-mono text-xs font-bold text-emerald-300">
+              VERIFICATION COMPLETE
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

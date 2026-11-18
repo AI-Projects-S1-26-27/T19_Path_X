@@ -1,0 +1,79 @@
+{
+  "experiment": "5-Class Fault Attribution Matrix & Precision-Recall Analysis",
+  "total_evaluated": 10,
+  "accuracy": 1.0,
+  "macro_precision": 1.0,
+  "macro_recall": 1.0,
+  "macro_f1": 1.0,
+  "abstentions": 0,
+  "abstention_rate": 0.0,
+  "per_class": {
+    "PLANNING_ERROR": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 2
+    },
+    "PERCEPTION_ERROR": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 2
+    },
+    "FORMALIZATION_ERROR": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 2
+    },
+    "ENVIRONMENT_CHANGE": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 2
+    },
+    "UNKNOWN_AMBIGUOUS": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "support": 2
+    }
+  },
+  "confusion_matrix": {
+    "PLANNING_ERROR": {
+      "PLANNING_ERROR": 2,
+      "PERCEPTION_ERROR": 0,
+      "FORMALIZATION_ERROR": 0,
+      "ENVIRONMENT_CHANGE": 0,
+      "UNKNOWN_AMBIGUOUS": 0
+    },
+    "PERCEPTION_ERROR": {
+      "PLANNING_ERROR": 0,
+      "PERCEPTION_ERROR": 2,
+      "FORMALIZATION_ERROR": 0,
+      "ENVIRONMENT_CHANGE": 0,
+      "UNKNOWN_AMBIGUOUS": 0
+    },
+    "FORMALIZATION_ERROR": {
+      "PLANNING_ERROR": 0,
+      "PERCEPTION_ERROR": 0,
+      "FORMALIZATION_ERROR": 2,
+      "ENVIRONMENT_CHANGE": 0,
+      "UNKNOWN_AMBIGUOUS": 0
+    },
+    "ENVIRONMENT_CHANGE": {
+      "PLANNING_ERROR": 0,
+      "PERCEPTION_ERROR": 0,
+      "FORMALIZATION_ERROR": 0,
+      "ENVIRONMENT_CHANGE": 2,
+      "UNKNOWN_AMBIGUOUS": 0
+    },
+    "UNKNOWN_AMBIGUOUS": {
+      "PLANNING_ERROR": 0,
+      "PERCEPTION_ERROR": 0,
+      "FORMALIZATION_ERROR": 0,
+      "ENVIRONMENT_CHANGE": 0,
+      "UNKNOWN_AMBIGUOUS": 2
+    }
+  }
+}
