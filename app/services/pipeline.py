@@ -314,6 +314,9 @@ class PipelineOrchestrator:
                 else:
                     effective_provider = "mock"
 
+        if effective_provider == "default":
+            effective_provider = "auto"
+
         if effective_provider not in ("mock", "custom", "", None):
             from interpretation.llm.live import LiveLLMProvider
             active_provider = LiveLLMProvider(provider=effective_provider, model=llm_model)

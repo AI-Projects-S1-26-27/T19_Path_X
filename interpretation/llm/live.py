@@ -43,12 +43,14 @@ class LiveLLMProvider(BaseLLMProvider):
         except Exception:
             pass
 
-        # Check LLM_PROVIDER in env if provider is "auto"
+        # Check LLM_PROVIDER in env if provider is "auto" or "default"
         env_llm_provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
-        if (not provider or provider == "auto") and env_llm_provider:
+        if (not provider or provider in ("auto", "default")) and env_llm_provider:
             self.provider = env_llm_provider
         else:
             self.provider = (provider or "auto").lower()
+            if self.provider == "default":
+                self.provider = "auto"
 
         self.model = model
         self.lm_studio_url = os.environ.get("LM_STUDIO_URL", "http://127.0.0.1:1234").rstrip("/")
