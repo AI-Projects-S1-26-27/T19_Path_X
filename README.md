@@ -1,294 +1,186 @@
-# RE-PLAN-V: Reliable Explainable Multi-Domain Planning with Formal Verification and Counterexample-Guided Repair
+# RE-PLAN-V
 
-[![Course](https://img.shields.io/badge/Course-CS%20F407%20Artificial%20Intelligence-indigo.svg)](VIVA_GUIDE.md)
-[![Category](https://img.shields.io/badge/Category-Appendix%20B%3A%20Cross--Area%20(Search%20+%20KRR%20+%20DL)-purple.svg)](VIVA_GUIDE.md)
-[![Status](https://img.shields.io/badge/Status-RESEARCH__PROTOTYPE__VERIFIED-blue.svg)](docs/engineering/FINAL_ENGINEERING_DELIVERY_REPORT.md)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
-[![Next.js 15](https://img.shields.io/badge/Next.js-15.1%20App%20Router-black.svg)](frontend/)
-[![WebSocket](https://img.shields.io/badge/Streaming-Bidirectional%20WebSockets-teal.svg)](app/api/websocket.py)
-[![Tests](https://img.shields.io/badge/Tests-476%20Passed%20(100%25)-brightgreen.svg)](tests/)
-[![Symbolic Core](https://img.shields.io/badge/Core-Symbolic--First%20Authoritative-success.svg)](core/)
-[![Zero-API Ready](https://img.shields.io/badge/Zero--API-Offline%20Ready%20(Symbolic%20Core)-emerald.svg)](core/)
+**RE-PLAN-V** is a text-first planning demo for converting natural-language tasks into symbolic problems, searching for action plans, and checking those plans against declared domain rules. When a candidate plan fails verification, the system can use the first failure witness to constrain replanning.The LLM formalizes the task. Symbolic search and verification determine whether a plan is valid or not.
 
-> **Release Status**: `RESEARCH_PROTOTYPE_VERIFIED` (Algorithmic neurosymbolic research prototype; not a deployed production cloud service).
-> **Research Question**: *"Can counterexample-guided fault attribution and automatic repair improve recovery from initially invalid plans compared with generic plan regeneration?"*  
-> **Controlled Pilot Finding**: **YES**. On the reproducible synthetic pilot test suite ($N=10$, seed=42), grounded counterexample-derived constraints achieve a **100.0% recovery rate** on initially invalid candidate plans compared to **50.0% recovery** for unguided generic plan regeneration, yielding a **+50.0% recovery advantage** with low millisecond pure repair latency.
+## Project information
 
----
+| Field         | Details                                                                                   |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| Course        | CS F407 / U407 Artificial Intelligence, BITS Pilani                                       |
+| Team          | Path_X                                                                                    |
+| Track         | Demo                                                                                      |
+| Project topic | Search & Problem Solving                                                                  |
+| Repository    | [github.com/saicharanyadavalli/RE-PLAN-V](https://github.com/saicharanyadavalli/RE-PLAN-V) |
 
-## Table of Contents
-1. [Executive Summary & Problem Statement](#1-executive-summary--problem-statement)
-2. [Architectural Division of Responsibility: Authoritative Symbolic Core vs Untrusted Neural Proposer](#2-architectural-division-of-responsibility-authoritative-symbolic-core-vs-untrusted-neural-proposer)
-3. [Neurosymbolic Architecture](#3-neurosymbolic-architecture)
-4. [Enterprise Next.js 15 Mission Control Dashboard](#4-enterprise-nextjs-15-mission-control-dashboard)
-5. [Why a 2-Billion Parameter Model Excels in RE-PLAN-V](#5-why-a-2-billion-parameter-model-excels-in-re-plan-v)
-6. [Distributed Edge-GPU Deployment (Local LAN)](#6-distributed-edge-gpu-deployment-local-lan)
-7. [Step-by-Step Instructions to Run Backend, Frontend & Tests](#7-step-by-step-instructions-to-run-backend-frontend--tests)
-8. [The 10 Inviolable Architectural Rules](#8-the-10-inviolable-architectural-rules)
-9. [Empirical Research Benchmark Results](#9-empirical-research-benchmark-results)
-10. [Academic Syllabus Alignment & Viva Defense](#10-academic-syllabus-alignment--viva-defense)
+## Team
 
----
+| No. | Name                           | BITS ID       | Role                           |
+| --: | ------------------------------ | ------------- | ------------------------------ |
+|   1 | Sai Gautam Reddy               | 2024A3PS0429H | Planning Lead                  |
+|   2 | Deeptimahanti Aashrith         | 2024AAPS0189H | KR&R Lead                      |
+|   3 | Yadavalli Sai Charan           | 2024A8PS0460H | Verification Lead              |
+|   4 | Chandhireddy Sathwik Reddy     | 2024AAPS0265H | Repair Lead                    |
+|   5 | Sana Nitchel Kumar             | 2024A7PS0056H | NLP/LLM Lead                   |
+|   6 | M. Yaswanth Pranav             | 2024A4PS0651H | Dataset/Research Lead          |
+|   7 | Maudela Bhargava Krishna Reddy | 2024A8PS0349H | Integration/Visualization Lead |
 
-## 1. Executive Summary & Problem Statement
+## How it works
 
-### The Problem with LLMs in Robotics & Autonomous Planning
-Large Language Models (LLMs) like GPT-4, Gemini 1.5, or Claude 3.5 Sonnet possess rich world knowledge and parse human language with high fluency. However, as established in peer-reviewed robotics literature (e.g. *NeurIPS PlanBench, Valmeekam et al.*), **stand-alone LLMs fail over 65% of the time on classical planning and physical reasoning tasks**.
-
-The fundamental flaws of LLM-only planning include:
-- **Lack of State Transition Semantics:** LLMs predict next tokens probabilistically ($P(w_t \mid w_{<t})$); they do not track discrete predicate state transitions $\Gamma(S, a) = (S \setminus \text{Del}(a)) \cup \text{Add}(a)$.
-- **Precondition Hallucinations:** LLMs routinely attempt to pick up objects when the gripper is already full, stack non-existent blocks, or manipulate fragile objects.
-- **Flawed Self-Repair:** When an LLM generates a flawed plan and is prompted *"That failed, please fix it"*, it enters unguided stochastic drift, repeatedly regenerating invalid actions.
-- **Catastrophic Physical Risk:** In robotics and industrial automation, an unverified plan can translate directly into physical motor commands, risking collision, hardware destruction, or human injury. (RE-PLAN-V operates as a formal symbolic planning and verification system; it does not issue live motor commands to physical hardware).
-
-### The RE-PLAN-V Solution
-RE-PLAN-V introduces an **asymmetric, symbolic-first neurosymbolic planning architecture**:
-1. The **Neural Model (LLM)** is treated strictly as an **untrusted proposer**. Its only job is translating natural language English into a structured dictionary of domain entities and goals.
-2. The **Symbolic Core** is the **sole authoritative ground truth**. It runs First-Order Logic Robinson MGU unification, optimal $A^*$ search with non-negative action costs, independent STRIPS formal verification, minimal counterexample witness extraction, 5-class fault attribution, and negative pruning constraint repair.
-
----
-
-## 2. Architectural Division of Responsibility: Authoritative Symbolic Core vs Untrusted Neural Proposer
-
-When defending this project in academic viva examinations (CS F407 / U407), the boundary between the external LLM proposer and student-authored algorithms is crystal clear:
-
-| Subsystem | Academic Pillar | Custom Student Implementation | Codebase Path |
-| :--- | :--- | :--- | :--- |
-| **First-Order Logic Core** | KR&R | Robinson's MGU Unification, term substitution, occurs-check, Horn clause forward chaining | [`core/krr/`](core/krr/) |
-| **Optimal Search Engine** | Search & Heuristics | $A^*$ Search (configured with admissible `ZeroHeuristic`, functioning as uniform-cost search baseline / Dijkstra's algorithm guaranteeing path-cost optimality under non-negative action costs), BFS, Best-First Search | [`core/search/`](core/search/) |
-| **STRIPS Formal Verifier** | Formal Methods | Independent state transition checker, invariant validation, mutex detection, goal checking | [`core/verification/`](core/verification/) |
-| **Counterexample Generator** | Formal Diagnostics | Minimal failing sub-trace extraction, state projection, actionable witness creation | [`core/counterexamples/`](core/counterexamples/) |
-| **Fault Attribution Engine** | Diagnostic AI | 5-class evidence-based taxonomy (`PERCEPTION`, `FORMALIZATION`, `PLANNING`, `ENVIRONMENT`, `AMBIGUOUS`) | [`core/attribution/`](core/attribution/) |
-| **Symbolic Repair Engine** | Inductive Synthesis (CEGIS) | Synthesis of typed negative pruning constraints (`FORBID_ACTION`, `FORBID_ACTION_BINDING`, `FORBID_TRANSITION`) into search space | [`core/repair/`](core/repair/) |
-| **Mission Control Dashboard** | Full-Stack Systems | Next.js 15+ App Router, Tailwind CSS, HTML5 Canvas animation, real-time WebSocket lifecycle streaming | [`frontend/`](frontend/) |
-| **Neural Task Translator** | Deep Learning Interface | Optional Pydantic prompt formatter for Gemma 2 2B / Gemini / Zero-API offline mock | [`interpretation/`](interpretation/) |
-
----
-
-## 3. Neurosymbolic Architecture
-
-```mermaid
-flowchart TD
-    NL["Natural Language Robotic Command\n(e.g., 'Move red box next to blue box. Do not move glass.')"] --> NI["Neural Task Interpreter\n(Gemma 2 2B / Gemini / Zero-API Mock)"]
-    NI --> |Untrusted Schema Dictionary| CV["Consistency & Mutex Validator\n(Type-checking, schema bounds)"]
-    
-    CV --> |Formal Symbolic Problem\n(Init State S0, Goal State G)| Search["Authoritative Search Planner\n(Optimal A* with Non-Negative Costs)"]
-    
-    Search --> |Candidate Action Trajectory| Verifier{"Formal STRIPS Verifier\n(Preconditions, Mutexes, Invariants)"}
-    
-    Verifier --> |Mathematically Valid| Dispatch["Final Verified Plan\n(Verified Under Model Assumptions)"]
-    
-    Verifier --> |Violation Detected| CEx["Minimal Counterexample Witness\n(Failing Step k, Offending Action, Violated Precondition)"]
-    
-    CEx --> FA["5-Class Fault Attribution Engine\n(Perception, Formalization, Planning, Environment)"]
-    
-    FA --> Repair["Symbolic Repair Synthesizer\n(Constraint: FORBID_ACTION_BINDING)"]
-    
-    Repair --> |Injected Negative Constraints| Replan["Bounded Replanning Loop\n(Prunes Failing Branch from A* Search Graph)"]
-    
-    Replan --> Search
+```text
+Natural-language task
+        ↓
+Domain routing and symbolic formalization
+        ↓
+Validation and symbolic problem construction
+        ↓
+BFS, Greedy Best-First, or A* planning
+        ↓
+Formal plan verification
+        ↓ on failure
+Failure witness → rule-based attribution → constrained replanning → re-verification
 ```
 
----
+### Symbolic representation
 
-## 4. Enterprise Next.js 15 Mission Control Dashboard
+Each task is represented with typed entities and predicate facts. A domain declares its predicates, action parameters, preconditions, effects, and invariants. The planner grounds those action schemas with the task's entities, applies valid actions to generate successor states, and searches for a state satisfying all goal facts. The LLM proposes the task representation; validation checks it before it enters search.
 
-The project features a full Next.js 15+ dark-mode Mission Control dashboard (`frontend/`) communicating in real-time with the FastAPI backend over bidirectional WebSockets (`ws://127.0.0.1:8080/ws/pipeline`):
+## Features
 
-- **Live WebSocket Streaming:** Emits typed lifecycle events (`PIPELINE_STARTED`, `INTERPRETATION_COMPLETED`, `SEARCH_COMPLETED`, `VERIFICATION_FAILED`, `COUNTEREXAMPLE_EXTRACTED`, `ATTRIBUTION_CLASSIFIED`, `REPAIR_INJECTED`, `FINAL_VERIFICATION`).
-- **Tabletop Canvas Simulation:** Interactive HTML5 Canvas showing robotic gripper states (`idle`, `holding`, `moving`) and real-time block entities (`red_box`, `blue_box`, `green_box`, `glass`).
-- **Capability Preset Library:** 8 one-click presets testing edge cases:
-  1. *Safe Relocation (DoD Happy Path)*
-  2. *3-Block Tower Assembly*
-  3. *Tower Inversion (Disassembly & Reassembly)*
-  4. *4-Block Complex Assembly*
-  5. *Clear Obstacle with Negative Constraints*
-  6. *Fragile Object Violation (Safety Enforcement)*
-  7. *Single-Arm Gripper Capacity Mutex*
-  8. *Deadlock & Circular Dependency Conflict*
-- **Minimal Counterexample & Repair Cards:** Dedicated diagnostic cards rendering the failing action step, the violated precondition literal, and the formal pruning constraints.
-- **Comparative Research Benchmark Tab:** Run live empirical experiments against baselines B0–B3 directly from the browser with zero fabricated data.
-- **Viva Defense Guide Modal:** In-app academic cheat-sheet with rapid-fire questions and answers for course evaluation.
+- Six registered symbolic domains: Blocks World, Grid World, Household Robotics, Warehouse Logistics, Job Scheduling, and Software Workflow.
+- LLM-backed task formalization, with a deterministic mock provider for offline demonstrations.
+- BFS, Greedy Best-First, and A* search over declarative domain actions.
+- State-space graph enumeration and interactive frontend exploration.
+- Verification of action preconditions, hard constraints, invariants, and final goals.
+- Optional simulated-fault demonstration of counterexample-guided repair and replanning.
+- Next.js frontend with live pipeline events streamed from the FastAPI backend over WebSockets.
 
----
+### Registered domains
 
-## 5. Why a 2-Billion Parameter Model Excels in RE-PLAN-V
+| Domain                           | Example planning problem                                                |
+| -------------------------------- | ----------------------------------------------------------------------- |
+| Blocks World                     | Pick up, put down, stack, and unstack blocks.                           |
+| Grid World                       | Navigate connected cells and move an item.                              |
+| Household Robotics (Abstract)    | Navigate rooms and move items to or from surfaces and containers.       |
+| Warehouse Operations             | Move a carrier between zones and retrieve or deposit inventory.         |
+| Scheduling & Resource Allocation | Schedule independent or precedence-constrained jobs on resources.       |
+| Software Automation / CI/CD      | Plan tests, security scans, artifact builds, approvals, and deployment. |
 
-A central practical design choice of RE-PLAN-V is showing that **massive 70B cloud models are not required for reliable robotics task translation**:
+These are symbolic planning domains; their names do not imply connection to physical robots, warehouse hardware, or external deployment systems.
 
-1. **Lightweight & Edge-Deployable:** A 2-billion parameter model (e.g., Google Gemma 2 2B or Qwen 2.5 1.5B) has an illustrative hardware profile of **~1.6–2.0 GB VRAM** in 4-bit quantization, enabling local execution on modest laptops or edge devices.
-2. **Speed & Efficiency:** Typical local inference latency is **~150–350 ms** on consumer GPUs (e.g. RTX 4060) or CPU fallback, avoiding external network round-trips.
-3. **Formal Verification Safety Net:** Because the LLM's role is strictly confined to grammar translation, any potential hallucination is caught and rejected by our STRIPS verifier.
-4. **Formally Verified Plan Correctness:** Pairing an efficient 2B model with RE-PLAN-V's authoritative symbolic verifier delivers **formally verified symbolic plans under declared domain invariants**, catching any neural hallucination at zero API cost.
+### What the demo displays
 
----
+- The routed domain and formalized entities, initial facts, goals, and constraints.
+- The candidate action sequence, selected planner, and execution trace.
+- The verification result, including the first failed action and violated condition when verification fails.
+- When fault injection is enabled, the counterexample witness, rule-based attribution, repair constraint, replanned actions, and final verification.
+- When graph enumeration is requested, reachable states and transitions within the configured exploration budget.
 
-## 6. Distributed Edge-GPU Deployment (Local LAN)
+The state-space graph is limited by its enumeration budget and may be marked truncated. It represents the configured symbolic model, not a live physical environment.
 
-RE-PLAN-V supports distributed multi-machine deployment:
+### Interfaces and providers
 
-```
-+-------------------------------------------------------------+
-| Teammate's Laptop (Neural Edge Node)                        |
-| - Dedicated 8GB GPU (NVIDIA RTX 3060/4060)                  |
-| - Ollama running Gemma 2 2B / Qwen 2.5                      |
-| - Listening on LAN: OLLAMA_HOST=0.0.0.0:11434               |
-+-------------------------------------------------------------+
-                              |
-                     WiFi / Local Network
-                              v
-+-------------------------------------------------------------+
-| Your Laptop (Symbolic Mission Control)                      |
-| - FastAPI Backend (Port 8080) with Authoritative Verifier    |
-| - Next.js 15 Frontend (Port 3000) Mission Control           |
-| - Connected via: LOCAL_LLM_URL=http://<teammate-ip>:11434   |
-+-------------------------------------------------------------+
-```
+- `POST /api/pipeline/run` runs the pipeline and returns a structured result.
+- `WS /ws/pipeline` streams pipeline stages and events to the frontend.
+- `GET /domains` lists registered domains; `POST /graph/enumerate` enumerates a reachable state-space graph.
+- The frontend offers OpenRouter, NVIDIA NIM Cloud, Gemini, and a deterministic mock provider. Cloud providers require their own configured API keys; exact model selection is configured separately.
 
-To run distributed:
-1. On teammate's laptop:
-   ```bash
-   OLLAMA_HOST=0.0.0.0:11434 ollama run gemma2:2b
-   ```
-2. On your laptop:
-   ```bash
-   LOCAL_LLM_URL=http://<teammate-lan-ip>:11434/api/generate python -m app.main --mode server --port 8080
-   npm --prefix frontend run dev
-   ```
+### Planner notes
 
----
+- Greedy Best-First uses the number of unsatisfied goal facts as its heuristic.
+- A* currently defaults to a zero heuristic and therefore orders states by accumulated action cost. The `h_max` and `h_add` Relaxed Planning Graph heuristic is implemented but is not connected to the default planning pipeline.
+- The State Space Explorer computes a separate heuristic for its visual search simulation from the graph it receives.
+- A counterexample records the verifier's first failure; it is not minimized. Fault attribution uses deterministic rules rather than an LLM classifier.
 
-## 7. Step-by-Step Instructions to Run Backend, Frontend & Tests
+## Scope
 
-### Step 1: Environment Setup
-```bash
-# Clone the repository
-git clone https://github.com/saicharanyadavalli/RE-PLAN-V.git
-cd RE-PLAN-V
+RE-PLAN-V plans over symbolic world models. Verification claims apply to those models and their declared rules. The project does not include image perception, live physical-world observation, or robot actuation. Fault injection simulates an invalid candidate plan to demonstrate the recovery workflow.
 
-# Create virtual environment and activate
+The repository includes benchmark code and saved experiment results. Report measurements with their specific experiment and instance count; they are not general performance guarantees.
+
+## Getting started
+
+Requirements: Python 3.10 or newer, Node.js, and npm.
+
+### Backend
+
+```powershell
 python -m venv .venv
-.\.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/macOS
-
-# Install Python backend dependencies
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+Copy-Item .env.example .env
+```
 
-# Install Frontend dependencies
+For cloud formalization, add the relevant API key to `.env`. The symbolic pipeline can also be run with the deterministic mock provider.
+
+Start the API server:
+
+```powershell
+python -m app.main --mode server --host 127.0.0.1 --port 8080
+```
+
+Health endpoint: [http://127.0.0.1:8080/health](http://127.0.0.1:8080/health)
+
+### Frontend
+
+In a second terminal:
+
+```powershell
 cd frontend
 npm install
-cd ..
-```
-
-### Step 2: Start the FastAPI Backend (Port 8080)
-```bash
-python -m app.main --mode server --port 8080
-```
-*Verify backend health:* Open [http://127.0.0.1:8080/health](http://127.0.0.1:8080/health) in your browser. It should return:
-```json
-{
-  "status": "ok",
-  "app": "RE-PLAN-V",
-  "symbolic_core": "authoritative",
-  "zero_api_ready": true
-}
-```
-
-### Step 3: Start the Next.js 15 Frontend (Port 3000)
-In a separate terminal:
-```bash
-cd frontend
 npm run dev
-# Or for optimized production: npm run build && npm run start
 ```
-*Open Mission Control:* Navigate to **[http://localhost:3000](http://localhost:3000)**.
 
-### Step 4: Run CLI Demonstrations & Full Test Suite
-```bash
-# Run CLI Interactive demonstration
-python -m app.main --mode cli --algorithm "A*"
+Open [http://localhost:3000](http://localhost:3000). By default, the frontend connects to the backend on port `8080`. Set `NEXT_PUBLIC_API_URL` or `NEXT_PUBLIC_WS_URL` to override the API or WebSocket endpoint.
 
-# Run empirical research benchmark reproduction
-python -m app.main --mode benchmark --instances 5 --seed 42
+## Demonstrate recovery
 
-# Execute full pytest suite with coverage
-pytest --cov=core --cov=interpretation --cov=evaluation --cov=dynamic --cov=app --cov-report=term-missing
+1. Enter a Blocks World task with a clear initial state and goal.
+2. Select a planner and formalization provider.
+3. Enable **Simulate Initial Planning Fault** and run the pipeline.
+4. Follow the verification failure, witness, attribution, repair, and final verification in the event trace.
+
+With fault injection off, a valid candidate may pass verification directly, so the counterexample-repair stages may not appear.
+
+## Repository structure
+
+Selected source folders; generated files, caches, and detailed test files are omitted.
+
+```text
+RE-PLAN-V/
+├── app/
+│   ├── api/                 # REST and WebSocket endpoints
+│   ├── services/            # Pipeline orchestration and problem building
+│   └── static/              # Static web interface
+├── benchmark/               # Benchmark datasets and mutation utilities
+├── configs/                 # Runtime defaults
+├── core/
+│   ├── actions/             # Action schemas, grounding, and transitions
+│   ├── attribution/         # Fault classification
+│   ├── counterexamples/     # Verification failure witnesses
+│   ├── domains/             # Registered planning domains
+│   ├── graph/               # Reachable state-space enumeration
+│   ├── krr/                 # Knowledge representation and reasoning
+│   ├── repair/              # Repair constraint generation
+│   ├── replanning/          # Counterexample-guided replanning loop
+│   ├── search/              # BFS, Greedy Best-First, A*, and heuristics
+│   ├── verification/        # Formal plan verifier
+│   └── world/               # Symbolic states, problems, and constraints
+├── evaluation/              # Benchmarks, metrics, and saved results
+├── dynamic/                 # Symbolic world monitoring and replanning
+├── frontend/
+│   ├── app/                 # Next.js routes and pages
+│   ├── components/          # Mission Control and graph UI
+│   ├── hooks/               # WebSocket and frontend state hooks
+│   └── types/               # Frontend data contracts
+├── interpretation/
+│   ├── llm/                 # Provider integrations and mock provider
+│   ├── schemas/             # Formalization schemas
+│   └── validator/           # Proposal consistency validation
+├── scripts/                 # Benchmark and provider utilities
+├── tests/                   # Unit, integration, scenario, and other tests
+├── .env.example             # Example provider configuration
+├── app/main.py              # API, CLI, and benchmark entry point
+├── pyproject.toml           # Python project metadata
+├── requirements.txt         # Python dependencies
+└── README.md
 ```
-*Result:* **476 passing tests** across 50 test modules, 100% test pass rate.
-
----
-
-## 8. The 10 Inviolable Architectural Rules
-
-1. **Symbolic Authority:** The symbolic model is the sole ground truth for transitions, validation, and action models.
-2. **Untrusted Neural Components:** LLMs only propose structured representations; they never verify plans or decide validity.
-3. **Single Transition Semantics:** Planners and verifiers execute the exact same `apply_transition` code.
-4. **Explicit Data Contracts:** Every stage boundary is strictly validated using typed Pydantic models.
-5. **Actionable Counterexamples:** Every verification failure produces a minimal witness with exact step index, failed action, and violated condition.
-6. **Evidence-Based Fault Attribution:** Classifies into 5 distinct categories (`PERCEPTION`, `FORMALIZATION`, `PLANNING`, `ENVIRONMENT_CHANGE`, `UNKNOWN_AMBIGUOUS`).
-7. **Targeted Symbolic Repair:** Injects formal negative pruning constraints into the search space rather than blind unguided regeneration.
-8. **Zero Fabricated Metrics:** Every metric in benchmarks and reports is directly measured from deterministic execution.
-9. **Zero-API Core Operation:** Completely functional and testable offline with zero required external network dependencies (symbolic core, search, verification, and repair run fully offline; live LLM providers have network dependencies).
-10. **Strict Bounded Loops:** Maximum repair iterations and loop detection guards guarantee termination and eliminate cycles.
-
----
-
-## 9. Empirical Research Benchmark Results
- 
-Measured empirical results across $N=10$ benchmark problem instances from `evaluation/reports/primary_research_experiment.json`:
-
-| Baseline / Method | Mathematical Formulation | Valid Plan Rate | Goal Success | Fault Recovery Rate | Avg Search / Repair Time |
-| :--- | :--- | :---: | :---: | :---: | :---: |
-| **B0: Direct Neural** | Raw unverified LLM token proposal | 0.0% | 0.0% | N/A | 0.14 ms |
-| **B1: Formalized Planner** | Formalized task + classical $A^*$ search | 100.0% | 100.0% | N/A* | 84.20 ms |
-| **B2: Verifier Reject-Only** | Formal verifier reject-only (no repair) | 0.0% | 0.0% | 0.0% | 0.12 ms |
-| **B3: Generic Regeneration** | Unguided candidate plan re-sampling | 50.0% | 50.0% | 50.0% | 16.41 ms |
-| **OURS: RE-PLAN-V** | **Counterexample-guided pruning repair** | **100.0%** | **100.0%** | **100.0%** | **93.13 ms** |
-
-\* *N/A: B0 and B1 are evaluated on initial proposals without prior invalid candidate plans fed to a repair loop (denominator is 0).*
-
-**Measured Recovery Advantage (OURS vs B3 Generic Regeneration): +50.0%**
-
-### Component Ablation Analysis
-
-| Ablation Configuration | Instances | Repair Success Rate | Avg Iterations | Key Insight |
-| :--- | :---: | :---: | :---: | :--- |
-| **Full System (OURS)** | 10 | **100.0%** | **1.00** | Structured witness prunes failing state-action transition |
-| **Without Verifier** | 10 | **0.0%** | **0.00** | Post-hoc ground-truth verification confirms candidate fails execution without gate |
-| **Without Counterexample** | 10 | **0.0%** | 5.00 | Reaches max iterations without finding targeted repair |
-| **Without Attribution** | 10 | 100.0% | 1.00 | Heuristic pruning handles planning errors, but cannot correct state belief or omissions |
-| **Without Repair** | 10 | **0.0%** | **0.00** | Verifier rejects immediately; no recovery attempted |
-| **Generic Regeneration (B3)** | 10 | **50.0%** | 3.20 | Unguided sampling struggles with multi-block obstacles |
-
-### Multi-Domain State Space Complexity Coverage (Model B Empirical Measurement)
-
-Calibrated across all 6 STRIPS domains using authoritative Model B state-space enumeration:
-
-| Domain ID | Supported Tier | Analytical Bound | Measured Reachable States | Directed Transitions | Status |
-| :--- | :--- | :---: | :---: | :---: | :--- |
-| **Blocks World** | TINY / MEDIUM / LARGE | 3 / 73 / 501 | 5 / 125 / 866 | 8 / 272 / 2090 | Complete |
-| **Grid World** | TINY / MEDIUM / LARGE | 4 / 294 / 648 | 4 / 288 / 640 | 6 / 624 / 1376 | Complete |
-| **Household Robotics** | TINY / MEDIUM / LARGE | 6 / 48 / 375 | 6 / 45 / 336 | 10 / 96 / 832 | Complete |
-| **Warehouse Logistics** | TINY / MEDIUM / LARGE | 6 / 75 / 648 | 8 / 90 / 636 | 13 / 192 / 1517 | Complete |
-| **Job Scheduling** | TINY / MEDIUM / LARGE | 3 / 25 / 125 | 7 / 73 / 209 | 10 / 192 / 628 | Complete |
-| **Software Workflow** | TINY / SMALL / MEDIUM | 4 / 6 / 36 | 9 / 16 / 1317 | 32 / 78 / 14000 | Truncated at Edge Cap (Lower Bound) |
-
-> [!NOTE]
-> Analytical bounds represent theoretical combinatorial state spaces. Measured values represent empirical Model B reachability graphs enumerated via forward BFS search under domain transition semantics. Truncated state spaces are empirical lower bounds resulting from budget limits.
-
-> [!IMPORTANT]
-> **Model-Relative Safety Notice**: All verification guarantees in RE-PLAN-V are strictly model-relative against the declared STRIPS domain models, typed schemas, and formal invariants. RE-PLAN-V is an algorithmic and neuro-symbolic research prototype; it does not issue live motor commands or guarantee physical hardware safety.
-
----
-
-## 10. Academic Syllabus Alignment & Viva Defense
-
-This project satisfies all requirements of **CS F407 / U407 Artificial Intelligence (Appendix B: Cross-Area Project)**:
-
-1. **Search & Heuristics:** Implementation of $A^*$ search with an admissible heuristic guaranteeing step-cost optimality ($A^*$ search configured with admissible `ZeroHeuristic`, functioning as uniform-cost search baseline guaranteeing path-cost optimality under non-negative action costs).
-2. **Knowledge Representation & Reasoning:** First-Order Logic terms, Robinson's MGU Unification with occurs-check, and Horn clause forward chaining.
-3. **Classical Planning:** Formal STRIPS operator definitions, precondition matching, state transition semantics, and invariant enforcement.
-4. **Deep Learning / Neural Systems:** LLM integration as a bounded, untrusted proposer supporting both local 2B models (Gemma 2 2B / Qwen 2.5) and cloud endpoints.
-5. **Formal Verification & Diagnostics:** Counterexample-Guided Inductive Synthesis (CEGIS), 5-class fault attribution, and provably bounded repair loops.
-
-For the full list of viva questions, theoretical proofs, and grading defense tips, consult the [VIVA_GUIDE.md](VIVA_GUIDE.md) document.
