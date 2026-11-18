@@ -40,7 +40,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
         <h3 className="font-mono text-sm font-semibold text-slate-400">Pipeline Idle</h3>
         <p className="mt-1 max-w-sm text-xs text-slate-500">
           Select a capability preset or enter an instruction, then click{" "}
-          <strong className="text-cyan-400">Run Neurosymbolic Pipeline</strong> to watch real-time execution.
+          <strong className="text-cyan-400">Run Formal Planning Pipeline</strong> to watch real-time execution.
         </p>
       </div>
     );

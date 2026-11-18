@@ -11,7 +11,8 @@ import { BenchmarkTab } from "../components/BenchmarkTab";
 import { ArchitectureRulesTab } from "../components/ArchitectureRulesTab";
 import { PipelineEventLog } from "../components/PipelineEventLog";
 import { usePipelineWebSocket } from "../hooks/usePipelineWebSocket";
-import { HelpCircle, AlertOctagon, Network } from "lucide-react";
+import { useBackendHealth } from "../hooks/useBackendHealth";
+import { HelpCircle, AlertOctagon, Network, RefreshCw, Power } from "lucide-react";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<NavTab>("demo");
@@ -21,6 +22,7 @@ export default function Home() {
   const [selectedDomain, setSelectedDomain] = useState<string>("auto");
 
   const { isStreaming, events, state, error, runPipeline, reset } = usePipelineWebSocket();
+  const backendHealth = useBackendHealth();
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
@@ -29,10 +31,40 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         isStreaming={isStreaming}
+        backendHealth={backendHealth}
       />
 
       {/* Main Container */}
       <main className="mx-auto flex-1 w-full max-w-7xl p-4 sm:p-6 pb-12">
+        {backendHealth.status === "waking" && (
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-xs text-amber-200 shadow-lg backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-amber-400 animate-spin shrink-0" />
+              <span>
+                <strong>Backend waking up:</strong> Initializing the symbolic core on Render (free-tier spin-up typically takes ~30 seconds). Attempting connection #{backendHealth.attempts}...
+              </span>
+            </div>
+            <span className="font-mono text-[11px] text-amber-400/80">Connecting...</span>
+          </div>
+        )}
+
+        {backendHealth.status === "sleeping" && (
+          <div className="mb-4 flex items-center justify-between rounded-xl border border-rose-500/40 bg-rose-950/30 px-4 py-3 text-xs text-rose-200 shadow-lg backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <Power className="h-4 w-4 text-rose-400 shrink-0" />
+              <span>
+                <strong>Backend is sleeping:</strong> Render free-tier services sleep after 15 minutes of inactivity. Click Wake Backend to boot the symbolic reasoning engine.
+              </span>
+            </div>
+            <button
+              onClick={backendHealth.wakeBackend}
+              className="rounded-lg bg-rose-600 px-3 py-1 font-semibold text-white shadow hover:bg-rose-500 transition"
+            >
+              Wake Server Now
+            </button>
+          </div>
+        )}
+
         {error && (
           <div className="mb-4 rounded-xl border border-rose-500/30 bg-rose-950/20 p-3 text-xs text-rose-300">
             <strong>System Error:</strong> {error}

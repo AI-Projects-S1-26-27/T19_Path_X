@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "RE-PLAN-V | Neurosymbolic Mission Control",
-  description: "Formal Plan Verification, Fault Attribution & Counterexample-Guided Repair",
+  title: "RE-PLAN-V | Formal Planning & Verification",
+  description: "Formal Plan Verification, Stage-Level Fault Attribution & Counterexample-Guided Repair",
 };
 
 export default function RootLayout({

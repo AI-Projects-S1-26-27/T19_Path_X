@@ -342,12 +342,12 @@ export function TaskControlPanel({
           {isStreaming ? (
             <>
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-400 border-t-white" />
-              Streaming Neurosymbolic Pipeline...
+              Streaming Formal Planning Pipeline...
             </>
           ) : (
             <>
               <Play className="h-4 w-4 fill-white" />
-              Run Neurosymbolic Pipeline
+              Run Formal Planning Pipeline
             </>
           )}
         </button>

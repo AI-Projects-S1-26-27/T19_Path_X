@@ -1551,7 +1551,7 @@ export function StateSpaceExplorer({
                 No Reachable States Loaded
               </span>
               <p className="max-w-md text-xs text-slate-400 mb-4">
-                Execute a task from the Mission Control tab to stream and explore the reachable state space DAG in real time.
+                Execute a task from the Interactive Planner tab to stream and explore the reachable state space DAG in real time.
               </p>
             </div>
           )}

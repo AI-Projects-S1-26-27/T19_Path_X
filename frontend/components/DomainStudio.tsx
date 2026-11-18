@@ -154,7 +154,7 @@ export function DomainStudio({ onSelectPrompt }: DomainStudioProps) {
               Canonical Planning Domain Studio
             </h2>
             <p className="mt-1 text-xs text-slate-400 max-w-2xl">
-              RE-PLAN-V is a generic neuro-symbolic platform. All action semantics, type hierarchies, and state invariants are specified declaratively without hardcoded domain logic.
+              RE-PLAN-V is a generic formal planning and verification platform. All action semantics, type hierarchies, and state invariants are specified declaratively without hardcoded domain logic.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -300,7 +300,7 @@ export function DomainStudio({ onSelectPrompt }: DomainStudioProps) {
                         onClick={() => onSelectPrompt?.(task, activeDomain.domain_id)}
                         className="rounded-lg bg-slate-800 px-3 py-1 text-[11px] font-semibold text-cyan-400 hover:bg-cyan-600 hover:text-white transition"
                       >
-                        Try in Mission Control &rarr;
+                        Try in Interactive Planner &rarr;
                       </button>
                     </div>
                   </div>

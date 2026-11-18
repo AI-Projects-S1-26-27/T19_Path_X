@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ShieldCheck, Cpu, Terminal, Sparkles, Network, Grid } from "lucide-react";
+import { ShieldCheck, Cpu, Terminal, Sparkles, Network, Grid, Power, RefreshCw } from "lucide-react";
 
 export type NavTab = "demo" | "graph" | "domains" | "benchmark" | "architecture";
 
@@ -10,9 +10,15 @@ interface NavbarProps {
   setActiveTab: (tab: NavTab) => void;
   isStreaming: boolean;
   onOpenDefenseModal?: () => void;
+  backendHealth?: {
+    status: "checking" | "online" | "sleeping" | "waking";
+    latencyMs: number | null;
+    attempts: number;
+    wakeBackend: () => void;
+  };
 }
 
-export function Navbar({ activeTab, setActiveTab, isStreaming }: NavbarProps) {
+export function Navbar({ activeTab, setActiveTab, isStreaming, backendHealth }: NavbarProps) {
   return (
     <header className="sticky top-0 z-50 border-b border-slate-800 bg-slate-950/80 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
@@ -44,7 +50,7 @@ export function Navbar({ activeTab, setActiveTab, isStreaming }: NavbarProps) {
             }`}
           >
             <Cpu className="h-3.5 w-3.5" />
-            Mission Control
+            Interactive Planner
           </button>
           <button
             onClick={() => setActiveTab("graph")}
@@ -92,19 +98,59 @@ export function Navbar({ activeTab, setActiveTab, isStreaming }: NavbarProps) {
           </button>
         </nav>
 
-        {/* Live Status */}
-        <div className="flex items-center gap-3">
+        {/* Live Status & Backend Wake Controller */}
+        <div className="flex items-center gap-2">
+          {backendHealth && (
+            <>
+              {backendHealth.status === "online" && (
+                <div
+                  title="Backend is awake and authoritative STRIPS core is ready"
+                  className="flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-950/40 px-3 py-1 text-xs"
+                >
+                  <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="font-mono text-[11px] text-emerald-300">
+                    CORE ONLINE {backendHealth.latencyMs ? `(${backendHealth.latencyMs}ms)` : ""}
+                  </span>
+                </div>
+              )}
+
+              {backendHealth.status === "waking" && (
+                <div
+                  title="Render free-tier service is spinning up. Stand by..."
+                  className="flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-950/50 px-3 py-1 text-xs"
+                >
+                  <RefreshCw className="h-3 w-3 text-amber-400 animate-spin" />
+                  <span className="font-mono text-[11px] text-amber-300">
+                    WAKING SERVER {backendHealth.attempts > 0 ? `(#${backendHealth.attempts})` : ""}
+                  </span>
+                </div>
+              )}
+
+              {(backendHealth.status === "sleeping" || backendHealth.status === "checking") && (
+                <button
+                  type="button"
+                  onClick={backendHealth.wakeBackend}
+                  title="Backend is sleeping (Render Free Tier). Click to wake it up."
+                  className="flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-950/50 px-3 py-1 text-xs font-semibold text-rose-300 hover:bg-rose-900/60 transition shadow-sm"
+                >
+                  <Power className="h-3 w-3 text-rose-400 animate-pulse" />
+                  <span>WAKE BACKEND</span>
+                </button>
+              )}
+            </>
+          )}
+
           <div
             title="Authoritative STRIPS verifier, forward chaining, and CEGIS repair engine active"
-            className="flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900 px-3 py-1 text-xs"
+            className="hidden sm:flex items-center gap-2 rounded-full border border-slate-800 bg-slate-900 px-3 py-1 text-xs"
           >
             <span
               className={`h-2 w-2 rounded-full ${
-                isStreaming ? "animate-ping bg-cyan-400" : "bg-emerald-400"
+                isStreaming ? "animate-ping bg-cyan-400" : "bg-cyan-500"
               }`}
             />
             <span className="font-mono text-[11px] text-slate-300">
-              {isStreaming ? "PIPELINE STREAMING..." : "6 DOMAINS ACTIVE"}
+              {isStreaming ? "STREAMING..." : "6 DOMAINS"}
             </span>
           </div>
         </div>
