@@ -214,7 +214,7 @@ class TestFailureScenarios:
         assert any("Unknown entity" in err for err in val_res.errors)
 
     def test_scenario_f7_incorrect_perception(self):
-        """F7: Incorrect perception (visual scene discrepancy)."""
+        """F7: Incorrect supplied observation (symbolic state discrepancy)."""
         attribution_engine = FaultAttributionEngine()
         domain = create_blocks_world_domain()
         init_facts = [Fact("on_table", ["b1"]), Fact("clear", ["b1"]), Fact("handempty", [])]

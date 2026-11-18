@@ -5,7 +5,7 @@ import { ShieldCheck, CheckCircle2 } from "lucide-react";
 
 const RULES = [
   { id: 1, name: "Symbolic-First Semantics", desc: "Symbolic layer is the authoritative ground truth for state transitions, validation, and action models." },
-  { id: 2, name: "Untrusted Neural Components", desc: "LLMs and VLMs only propose structured schemas; they never verify plans or decide validity." },
+  { id: 2, name: "Untrusted Neural Components", desc: "LLMs only propose structured schemas; they never verify plans or decide validity." },
   { id: 3, name: "Single Transition Semantics", desc: "Search planners and the formal verifier share the exact same apply_transition implementation." },
   { id: 4, name: "Explicit Data Contracts", desc: "Every stage boundary is strictly validated via typed Pydantic models." },
   { id: 5, name: "Actionable Counterexamples", desc: "Every verification failure produces a minimal witness with exact step index, failed action, and violated condition." },

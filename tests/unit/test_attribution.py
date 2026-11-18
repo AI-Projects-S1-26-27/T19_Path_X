@@ -77,7 +77,7 @@ def test_attribute_perception_error():
         state_snapshot=SymbolicStateSchema(),
     )
 
-    # Observed facts claimed clear(b1) was True, but ground truth didn't have it
+    # Supplied observed facts claim clear(b1), but symbolic ground truth does not.
     observed = [FactSchema(predicate="clear", arguments=("b1",))]
     ground_truth = [FactSchema(predicate="on", arguments=("b2", "b1"))]
 
@@ -90,7 +90,7 @@ def test_attribute_perception_error():
 
     assert attribution.fault_class == FaultClass.PERCEPTION_ERROR
     assert attribution.confidence >= 0.85
-    assert "Perception / Vision" in attribution.affected_stage
+    assert "Observed State Input" in attribution.affected_stage
 
 
 def test_attribute_formalization_error():
