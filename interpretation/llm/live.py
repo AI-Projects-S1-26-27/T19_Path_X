@@ -46,7 +46,7 @@ class LiveLLMProvider(BaseLLMProvider):
         # Check LLM_PROVIDER in env if provider is "auto" or "default"
         env_llm_provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
         if (not provider or provider in ("auto", "default")) and env_llm_provider:
-            self.provider = env_llm_provider
+            self.provider = "auto" if env_llm_provider == "default" else env_llm_provider
         else:
             self.provider = (provider or "auto").lower()
             if self.provider == "default":

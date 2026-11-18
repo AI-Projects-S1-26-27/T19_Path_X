@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { ShieldCheck, Cpu, Terminal, Sparkles, Network, Grid } from "lucide-react";
+import { ShieldCheck, Cpu, Terminal, Sparkles, BookOpen, Network, Grid } from "lucide-react";
 
 export type NavTab = "demo" | "graph" | "domains" | "benchmark" | "architecture";
 
@@ -9,9 +9,10 @@ interface NavbarProps {
   activeTab: NavTab;
   setActiveTab: (tab: NavTab) => void;
   isStreaming: boolean;
+  onOpenDefenseModal: () => void;
 }
 
-export function Navbar({ activeTab, setActiveTab, isStreaming }: NavbarProps) {
+export function Navbar({ activeTab, setActiveTab, isStreaming, onOpenDefenseModal }: NavbarProps) {
   return (
     <header className="sticky top-0 z-50 border-b border-slate-800 bg-slate-950/80 backdrop-blur-md">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
@@ -91,7 +92,7 @@ export function Navbar({ activeTab, setActiveTab, isStreaming }: NavbarProps) {
           </button>
         </nav>
 
-        {/* Live Status */}
+        {/* Live Status & Defense Cheat-Sheet */}
         <div className="flex items-center gap-3">
           <div
             title="Authoritative STRIPS verifier, forward chaining, and CEGIS repair engine active"
@@ -106,6 +107,14 @@ export function Navbar({ activeTab, setActiveTab, isStreaming }: NavbarProps) {
               {isStreaming ? "PIPELINE STREAMING..." : "6 DOMAINS ACTIVE"}
             </span>
           </div>
+
+          <button
+            onClick={onOpenDefenseModal}
+            className="flex items-center gap-1.5 rounded-lg border border-purple-500/30 bg-purple-500/10 px-3 py-1.5 text-xs font-semibold text-purple-300 transition hover:bg-purple-500/20"
+          >
+            <BookOpen className="h-3.5 w-3.5 text-purple-400" />
+            Viva Defense Guide
+          </button>
         </div>
       </div>
     </header>

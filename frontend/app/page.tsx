@@ -10,11 +10,13 @@ import { DomainStudio } from "../components/DomainStudio";
 import { BenchmarkTab } from "../components/BenchmarkTab";
 import { ArchitectureRulesTab } from "../components/ArchitectureRulesTab";
 import { PipelineEventLog } from "../components/PipelineEventLog";
+import { AcademicDefenseModal } from "../components/AcademicDefenseModal";
 import { usePipelineWebSocket } from "../hooks/usePipelineWebSocket";
 import { HelpCircle, AlertOctagon, Network } from "lucide-react";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<NavTab>("demo");
+  const [isDefenseModalOpen, setIsDefenseModalOpen] = useState(false);
   const [currentPrompt, setCurrentPrompt] = useState(
     "Move the red box next to the blue box. Do not move the glass."
   );
@@ -29,6 +31,7 @@ export default function Home() {
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         isStreaming={isStreaming}
+        onOpenDefenseModal={() => setIsDefenseModalOpen(true)}
       />
 
       {/* Main Container */}
@@ -158,9 +161,15 @@ export default function Home() {
       </main>
 
       {/* Footer */}
-      <footer className="mt-12 border-t border-slate-900 bg-slate-950/80 py-5 text-center text-xs text-slate-500">
-        RE-PLAN-V Demo &bull; CS F407 Artificial Intelligence
+      <footer className="border-t border-slate-900 bg-slate-950/60 py-4 text-center text-xs text-slate-500">
+        RE-PLAN-V Research Platform &bull; CS F407 Artificial Intelligence &bull; Neurosymbolic Verification Engine
       </footer>
+
+      {/* Viva Defense Cheat-Sheet Modal */}
+      <AcademicDefenseModal
+        isOpen={isDefenseModalOpen}
+        onClose={() => setIsDefenseModalOpen(false)}
+      />
     </div>
   );
 }
