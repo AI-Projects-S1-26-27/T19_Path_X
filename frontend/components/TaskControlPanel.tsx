@@ -267,7 +267,8 @@ export function TaskControlPanel({
               style={{ colorScheme: "dark" }}
               className="w-full rounded-xl border border-slate-700 bg-slate-900 p-2.5 text-xs font-medium text-slate-100 focus:border-cyan-500 focus:outline-none cursor-pointer [&>option]:bg-slate-900 [&>option]:text-slate-100"
             >
-              <option value="openrouter" className="bg-slate-900 text-slate-100 py-1.5">OpenRouter</option>
+              <option value="mock" className="bg-slate-900 text-slate-100 py-1.5">Deterministic Zero-API Mock (Offline / ₹0)</option>
+              <option value="openrouter" className="bg-slate-900 text-slate-100 py-1.5">OpenRouter API</option>
               <option value="nvidia" className="bg-slate-900 text-slate-100 py-1.5">NVIDIA NIM Cloud</option>
               <option value="gemini" className="bg-slate-900 text-slate-100 py-1.5">Gemini API</option>
             </select>

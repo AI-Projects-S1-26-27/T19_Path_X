@@ -181,6 +181,7 @@ export interface PipelineStreamEvent {
 }
 
 export type LLMProviderType =
+  | "mock"
   | "openrouter"
   | "nvidia"
   | "gemini";
