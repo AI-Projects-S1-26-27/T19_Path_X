@@ -47,6 +47,8 @@ export interface PipelineAccumulatedState {
   backtrackCount?: number;
   searchBenchmark?: Array<{ algorithm: string; duration_ms: number; cost: number; nodes_expanded: number; is_winner: boolean; is_success: boolean }>;
   isFastestSearchMode?: boolean;
+  planningFailed?: boolean;
+  planningFailedMessage?: string;
   treeLog?: Array<{ stage: string; message: string; timestamp: number; type: "info" | "warning" | "recovery" }>;
   // Graph exploration state
   graphNodes: GraphNode[];
@@ -73,6 +75,8 @@ const initialState: PipelineAccumulatedState = {
   providerUsed: "auto",
   cascadeCount: 0,
   backtrackCount: 0,
+  planningFailed: false,
+  planningFailedMessage: undefined,
   treeLog: [],
   graphNodes: [],
   graphEdges: [],
@@ -291,6 +295,21 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                   { stage: "CASCADE", message: data.message, timestamp: data.timestamp || Date.now(), type: "recovery" },
                 ],
               }));
+            } else if (data.stage === "PLANNING_FAILED") {
+              setState((prev) => ({
+                ...prev,
+                planningFailed: true,
+                planningFailedMessage: data.message || "All planners exhausted. No valid plan found.",
+                searchBenchmark: data.data?.search_benchmark || prev.searchBenchmark,
+                treeLog: [
+                  ...(prev.treeLog || []),
+                  { stage: "PLANNING_FAILED", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
+                ],
+              }));
+              if (data.data?.will_retry === false) {
+                terminalEventRef.current = true;
+                setIsStreaming(false);
+              }
             } else if (data.stage === "VALIDATION_FAILED") {
               setState((prev) => ({
                 ...prev,
@@ -363,6 +382,20 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                 decisionTrace: data.data.decision_trace || prev.decisionTrace,
               }));
             } else if (data.stage === "PIPELINE_FINISHED" || data.stage === "ERROR") {
+              if (data.stage === "ERROR") {
+                setError(data.message || "Pipeline execution error occurred.");
+                setState((prev) => ({
+                  ...prev,
+                  planningFailed: prev.candidatePlan.length === 0 ? true : prev.planningFailed,
+                  planningFailedMessage: prev.candidatePlan.length === 0
+                    ? (data.message || "No valid path found to reach the goal under active constraints.")
+                    : prev.planningFailedMessage,
+                  treeLog: [
+                    ...(prev.treeLog || []),
+                    { stage: "ERROR", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
+                  ],
+                }));
+              }
               terminalEventRef.current = true;
               setIsStreaming(false);
               ws.close();

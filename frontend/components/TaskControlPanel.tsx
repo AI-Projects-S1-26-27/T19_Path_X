@@ -34,9 +34,10 @@ const PRESETS = [
     id: 3,
     domain: "blocks_world",
     domainLabel: "Blocks",
-    title: "Fragile Fault Injection",
-    prompt: "Stack the blue box on the green box. Do not touch the fragile glass.",
+    title: "Counterexample Repair Demo",
+    prompt: "Move the red box next to the blue box. Do not move the glass.",
     forceFault: true,
+    demo: true,
   },
   {
     id: 4,
@@ -129,6 +130,7 @@ export function TaskControlPanel({
     setPrompt(p.prompt);
     setDomainId(p.domain);
     setForceFault(p.forceFault);
+    if ("demo" in p && p.demo) setProviderType("mock");
     onPromptChange?.(p.prompt);
   };
 

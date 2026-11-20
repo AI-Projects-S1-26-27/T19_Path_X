@@ -420,16 +420,22 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                         ))
 
             if candidate is None:
-                if backtrack_idx < orchestrator.max_backtracks:
-                    last_validation_errors = ["All planners failed. Please simplify goals or check entity names."]
-                    trace.backtracks += 1
-                    trace.recovery_path.append(f"backtrack_planning_{backtrack_idx + 1}")
-                    await emit("PLANNING_FAILED", "All planners exhausted. Backtracking to re-interpret...", {
-                        "will_retry": True,
-                    })
-                    continue  # ← BACKTRACK
-
-                await emit("ERROR", "All planners exhausted after all backtracks.", {})
+                fail_msg = (
+                    "No valid path found. All candidate search algorithms (A*, BFS, Greedy Best-First) "
+                    "exhausted all reachable states without finding a path to the goal. "
+                    "The requested goal is unreachable under active safety constraints."
+                )
+                await emit("PLANNING_FAILED", fail_msg, {
+                    "will_retry": False,
+                    "search_benchmark": search_benchmark_data,
+                })
+                await emit("ERROR", f"No valid plan found: {fail_msg}", {
+                    "search_benchmark": search_benchmark_data,
+                })
+                await emit("PIPELINE_FINISHED", "Pipeline execution finished: No valid path found.", {
+                    "plan_length": 0,
+                    "success": False,
+                })
                 return
 
             # Force fault for demonstration

@@ -610,18 +610,7 @@ class PipelineOrchestrator:
                         logger.warning(f"Planner {algo_name} failed: {e}")
 
             if candidate is None:
-                # All planners failed — backtrack to re-interpretation
-                if backtrack_idx < self.max_backtracks:
-                    last_validation_errors = [
-                        "The planner could not find any valid plan for your formalization. "
-                        "Please simplify the goals or check entity names."
-                    ]
-                    trace.backtracks += 1
-                    trace.recovery_path.append(f"backtrack_planning_failed_{backtrack_idx + 1}")
-                    logger.info(f"All planners failed, backtracking to re-interpret (attempt {backtrack_idx + 2})")
-                    continue  # ← BACKTRACK to Stage 1
-
-                # Exhausted — return planning failure
+                # All planners failed — immediately return planning failure without unguided backtracks
                 elapsed = (time.perf_counter() - start_time) * 1000.0
                 trace.total_attempts = sum(1 for s in trace.stage_trace if s.stage == "INTERPRET")
                 trace.final_provider = provider_name
@@ -629,12 +618,12 @@ class PipelineOrchestrator:
                 dummy_verif = VerificationResultSchema(
                     is_valid=False,
                     failed_step_index=0,
-                    explanation="All planners exhausted; no valid plan found after backtracks.",
+                    explanation="No valid plan found: All candidate planners exhausted reachable states without reaching the goal.",
                 )
                 return PipelineExecutionResult(
                     task_id=proposal.task_id,
                     raw_prompt=prompt,
-                    status="INVALID_PROPOSAL",
+                    status="NO_PLAN_FOUND",
                     domain_id=routed_domain_id,
                     interpretation=proposal,
                     validation=val_res,

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { AlertTriangle, CheckCircle2, XCircle } from "lucide-react";
 import { GraphNode, GraphEdge, GraphStats } from "../types/pipeline";
 
 export type SearchAlgorithmType = "astar" | "bfs" | "greedy";
@@ -722,6 +723,22 @@ export function StateSpaceExplorer({
           queueSnapshot: Array.from(openSet.values()).map((v) => ({ ...v, id: formatStateId(v.id) })).sort((a, b) => a.f - b.f),
         });
       }
+
+      if (!steps.some((s) => s.solutionPathNodeIds.length > 0)) {
+        steps.push({
+          stepIndex: stepCounter,
+          currentNodeId: steps.length > 0 ? steps[steps.length - 1].currentNodeId : formatStateId(startNode.id),
+          frontierNodeIds: [],
+          closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
+          solutionPathNodeIds: [],
+          solutionEdgeKeys: new Set(),
+          g: steps.length > 0 ? steps[steps.length - 1].g : 0,
+          h: steps.length > 0 ? steps[steps.length - 1].h : 0,
+          f: steps.length > 0 ? steps[steps.length - 1].f : 0,
+          explanation: `🚨 Search Complete: NO VALID PATH TO GOAL! A* search frontier exhausted after exploring all ${closedSet.size} reachable state(s). 0 goal states exist in the reachable space under active constraints.`,
+          queueSnapshot: [],
+        });
+      }
     } else if (selectedAlgorithm === "bfs") {
       // Breadth-First Search (FIFO queue)
       const queue: string[] = [startNode.id];
@@ -792,6 +809,22 @@ export function StateSpaceExplorer({
           f: currDepth,
           explanation: `BFS popped ${formatStateId(curr)} from FIFO queue at depth ${currDepth}. Enqueued ${addedCount} unvisited successor(s).`,
           queueSnapshot: queue.map((id) => ({ id: formatStateId(id), g: depthMap[id] ?? 0, h: heuristicDistances[id] ?? 0, f: depthMap[id] ?? 0 })),
+        });
+      }
+
+      if (!steps.some((s) => s.solutionPathNodeIds.length > 0)) {
+        steps.push({
+          stepIndex: stepCounter,
+          currentNodeId: steps.length > 0 ? steps[steps.length - 1].currentNodeId : formatStateId(startNode.id),
+          frontierNodeIds: [],
+          closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
+          solutionPathNodeIds: [],
+          solutionEdgeKeys: new Set(),
+          g: steps.length > 0 ? steps[steps.length - 1].g : 0,
+          h: steps.length > 0 ? steps[steps.length - 1].h : 0,
+          f: steps.length > 0 ? steps[steps.length - 1].f : 0,
+          explanation: `🚨 Search Complete: NO VALID PATH TO GOAL! BFS queue exhausted after exploring all ${closedSet.size} reachable state(s). 0 goal states exist in the reachable space under active constraints.`,
+          queueSnapshot: [],
         });
       }
     } else {
@@ -885,6 +918,22 @@ export function StateSpaceExplorer({
           queueSnapshot: Array.from(openSet.values()).map((v) => ({ ...v, id: formatStateId(v.id) })).sort((a, b) => a.h - b.h),
         });
       }
+
+      if (!steps.some((s) => s.solutionPathNodeIds.length > 0)) {
+        steps.push({
+          stepIndex: stepCounter,
+          currentNodeId: steps.length > 0 ? steps[steps.length - 1].currentNodeId : formatStateId(startNode.id),
+          frontierNodeIds: [],
+          closedNodeIds: Array.from(closedSet).map((k) => formatStateId(k)),
+          solutionPathNodeIds: [],
+          solutionEdgeKeys: new Set(),
+          g: steps.length > 0 ? steps[steps.length - 1].g : 0,
+          h: steps.length > 0 ? steps[steps.length - 1].h : 0,
+          f: steps.length > 0 ? steps[steps.length - 1].f : 0,
+          explanation: `🚨 Search Complete: NO VALID PATH TO GOAL! Greedy Best-First queue exhausted after exploring all ${closedSet.size} reachable state(s). 0 goal states exist in the reachable space under active constraints.`,
+          queueSnapshot: [],
+        });
+      }
     }
 
     return steps;
@@ -911,9 +960,30 @@ export function StateSpaceExplorer({
 
   // Active step
   const activeSimStep = simulationSteps[currentSimStepIndex] || null;
+  const hasGoalStates = useMemo(() => currentNodes.some((n) => n.is_goal), [currentNodes]);
 
   return (
     <div className="flex flex-col gap-4">
+      {/* NO VALID PATH / UNREACHABLE GOAL BANNER */}
+      {!hasGoalStates && currentNodes.length > 0 && (
+        <div className="flex items-start gap-3 rounded-2xl border border-rose-500/40 bg-rose-950/30 p-4 shadow-xl backdrop-blur-md">
+          <AlertTriangle className="h-5 w-5 text-rose-400 shrink-0 mt-0.5" />
+          <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-bold text-rose-300">
+                NO VALID PATH FOUND TO GOAL (0 Goal States Reachable)
+              </span>
+              <span className="rounded bg-rose-500/20 px-2 py-0.5 text-[10px] font-bold text-rose-400 border border-rose-500/30">
+                SEARCH EXHAUSTED
+              </span>
+            </div>
+            <p className="text-xs text-rose-200/80 leading-relaxed">
+              The search graph explored all <span className="font-semibold text-rose-200">{currentNodes.length} reachable states</span> across max depth <span className="font-semibold text-rose-200">{currentStats?.max_depth_reached ?? 0}</span>, but <strong>zero states satisfy the goal condition</strong> without violating hard safety constraints. The trajectory stopped because no further valid transitions can be executed.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* SEARCH ALGORITHM NODE-BY-NODE ANIMATION TOOLBAR */}
       <div className="flex flex-col gap-2.5 rounded-2xl border border-cyan-500/30 bg-slate-900/90 p-4 shadow-xl backdrop-blur-md">
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1061,8 +1131,24 @@ export function StateSpaceExplorer({
 
         {/* Explanatory Banner */}
         {activeSimStep && (
-          <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/20 p-2.5 text-xs text-cyan-200/90 leading-relaxed">
-            <span className="font-bold text-cyan-300 mr-1.5">🎓 Search Concept:</span>
+          <div
+            className={`rounded-xl border p-2.5 text-xs leading-relaxed ${
+              activeSimStep.explanation.includes("NO VALID PATH") || activeSimStep.explanation.includes("Terminated")
+                ? "border-rose-500/40 bg-rose-950/30 text-rose-200/95"
+                : "border-cyan-500/20 bg-cyan-950/20 text-cyan-200/90"
+            }`}
+          >
+            <span
+              className={`font-bold mr-1.5 ${
+                activeSimStep.explanation.includes("NO VALID PATH") || activeSimStep.explanation.includes("Terminated")
+                  ? "text-rose-300"
+                  : "text-cyan-300"
+              }`}
+            >
+              {activeSimStep.explanation.includes("NO VALID PATH") || activeSimStep.explanation.includes("Terminated")
+                ? "🛑 Search Terminated:"
+                : "🎓 Search Concept:"}
+            </span>
             {activeSimStep.explanation.replace(/\b[0-9a-fA-F]{8,64}\b/g, (h) => formatStateId(h))}
           </div>
         )}
@@ -1286,6 +1372,16 @@ export function StateSpaceExplorer({
               >
                 <polygon points="0 0, 9 3.5, 0 7" fill="#38bdf8" />
               </marker>
+              <marker
+                id="arrowhead-amber"
+                markerWidth="9"
+                markerHeight="7"
+                refX="19"
+                refY="3.5"
+                orient="auto"
+              >
+                <polygon points="0 0, 9 3.5, 0 7" fill="#f59e0b" />
+              </marker>
             </defs>
 
             <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`} style={{ willChange: "transform" }}>
@@ -1312,10 +1408,18 @@ export function StateSpaceExplorer({
                 let filterClass: string | undefined = undefined;
 
                 if (isOnTrajectory) {
-                  strokeColor = "#38bdf8"; // vibrant cyan for selected search trajectory
-                  strokeWidth = 2.8;
-                  markerEnd = "url(#arrowhead-trajectory)";
-                  filterClass = "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.7)]";
+                  const isTrajectoryToGoal = Boolean(selectedNode?.is_goal);
+                  if (isTrajectoryToGoal) {
+                    strokeColor = "#38bdf8"; // vibrant cyan for selected goal trajectory
+                    strokeWidth = 2.8;
+                    markerEnd = "url(#arrowhead-trajectory)";
+                    filterClass = "filter drop-shadow-[0_0_8px_rgba(56,189,248,0.7)]";
+                  } else {
+                    strokeColor = "#f59e0b"; // amber for partial / dead-end trajectory (goal not reached)
+                    strokeWidth = 2.4;
+                    markerEnd = "url(#arrowhead-amber)";
+                    filterClass = "filter drop-shadow-[0_0_8px_rgba(245,158,11,0.6)]";
+                  }
                 } else if (isSolutionEdge) {
                   strokeColor = "#10b981"; // emerald for solution
                   strokeWidth = 3;
@@ -1365,15 +1469,33 @@ export function StateSpaceExplorer({
                           height={20}
                           rx={5}
                           fill="#030712"
-                          stroke={isOnTrajectory ? "#0284c7" : "#475569"}
+                          stroke={
+                            isOnTrajectory
+                              ? selectedNode?.is_goal
+                                ? "#0284c7"
+                                : "#d97706"
+                              : "#475569"
+                          }
                           strokeWidth={isOnTrajectory ? 1.5 : 1}
-                          className={isOnTrajectory ? "filter drop-shadow-[0_2px_10px_rgba(2,132,199,0.6)]" : "filter drop-shadow-sm"}
+                          className={
+                            isOnTrajectory
+                              ? selectedNode?.is_goal
+                                ? "filter drop-shadow-[0_2px_10px_rgba(2,132,199,0.6)]"
+                                : "filter drop-shadow-[0_2px_10px_rgba(217,119,6,0.6)]"
+                              : "filter drop-shadow-sm"
+                          }
                         />
                         <text
                           textAnchor="middle"
                           dy="3.5"
                           fontSize="9"
-                          fill={isOnTrajectory ? "#38bdf8" : "#cbd5e1"}
+                          fill={
+                            isOnTrajectory
+                              ? selectedNode?.is_goal
+                                ? "#38bdf8"
+                                : "#fbbf24"
+                              : "#cbd5e1"
+                          }
                           fontWeight="bold"
                           fontFamily="monospace"
                         >
@@ -1632,15 +1754,47 @@ export function StateSpaceExplorer({
               </div>
 
               {/* SEARCH TRAJECTORY: ROOT-TO-NODE STEP-BY-STEP */}
-              <div className="flex flex-col gap-2 rounded-xl border border-cyan-500/30 bg-cyan-950/20 p-3">
+              <div
+                className={`flex flex-col gap-2 rounded-xl border p-3 ${
+                  selectedNode.is_goal
+                    ? "border-cyan-500/30 bg-cyan-950/20"
+                    : "border-amber-500/30 bg-amber-950/20"
+                }`}
+              >
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">
-                    Search Trajectory ({selectedTrajectory.pathEdges.length} {selectedTrajectory.pathEdges.length === 1 ? "Step" : "Steps"} from Root)
+                  <span
+                    className={`text-[10px] font-bold uppercase tracking-wider ${
+                      selectedNode.is_goal ? "text-cyan-400" : "text-amber-400"
+                    }`}
+                  >
+                    {selectedNode.is_goal
+                      ? `Goal Trajectory (${selectedTrajectory.pathEdges.length} ${
+                          selectedTrajectory.pathEdges.length === 1 ? "Step" : "Steps"
+                        } from Root)`
+                      : `Partial Trajectory (${selectedTrajectory.pathEdges.length} ${
+                          selectedTrajectory.pathEdges.length === 1 ? "Step" : "Steps"
+                        } · Goal Not Reached)`}
                   </span>
-                  <span className="font-mono text-[10px] text-cyan-300 font-semibold">
+                  <span
+                    className={`font-mono text-[10px] font-semibold ${
+                      selectedNode.is_goal ? "text-cyan-300" : "text-amber-300"
+                    }`}
+                  >
                     Depth {selectedNode.depth}
                   </span>
                 </div>
+
+                {!selectedNode.is_goal && !selectedNode.is_initial && (
+                  <div className="flex items-start gap-1.5 rounded-lg border border-amber-500/30 bg-amber-950/40 p-2 text-[11px] text-amber-200/90 leading-tight">
+                    <AlertTriangle className="h-3.5 w-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>
+                      <strong>Goal Not Satisfied:</strong> This state does not fulfill all goal requirements.{" "}
+                      {!hasGoalStates
+                        ? "No valid path to goal exists anywhere in this state space under active constraints."
+                        : "Continue exploring other branches to find a goal."}
+                    </span>
+                  </div>
+                )}
 
                 {selectedTrajectory.pathEdges.length > 0 ? (
                   <div className="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
@@ -1650,10 +1804,19 @@ export function StateSpaceExplorer({
                         className="flex items-center justify-between rounded bg-slate-900/90 px-2.5 py-1.5 text-xs border border-slate-800"
                       >
                         <div className="flex items-center gap-2 overflow-hidden mr-2">
-                          <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-cyan-500/20 text-[9px] font-bold text-cyan-300 border border-cyan-500/40">
+                          <span
+                            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${
+                              selectedNode.is_goal
+                                ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                                : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            }`}
+                          >
                             {idx + 1}
                           </span>
-                          <span className="font-mono text-emerald-300 text-[11px] font-semibold truncate" title={formatActionCall(e)}>
+                          <span
+                            className="font-mono text-emerald-300 text-[11px] font-semibold truncate"
+                            title={formatActionCall(e)}
+                          >
                             {formatActionCall(e)}
                           </span>
                         </div>
@@ -1737,6 +1900,8 @@ export function StateSpaceExplorer({
                     <span className="text-xs text-slate-400 italic p-1">
                       {selectedNode.is_goal
                         ? "Goal state reached! No further forward action expansion needed."
+                        : !hasGoalStates
+                        ? "No forward actions available. All other transitions violate safety constraints (Dead End leaf)."
                         : "No forward actions (Dead End or Leaf)."}
                     </span>
                   )}

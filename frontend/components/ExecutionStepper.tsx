@@ -51,6 +51,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
   const provider = providerLabel(state.providerUsed || state.decisionTrace?.final_provider || "Configured provider");
   const isFastest = Boolean(state.isFastestSearchMode || state.requestedAlgorithm?.includes("Fastest"));
   const isPlanFound = state.candidatePlan.length > 0;
+  const isPlanningFailed = Boolean(state.planningFailed || (!isStreaming && !isPlanFound && state.isSchemaValid));
   const algorithm = state.plannerAlgorithm || state.requestedAlgorithm || state.decisionTrace?.final_algorithm || (isFastest ? "Fastest measured" : "Authoritative Search");
   const algorithmLabel = algorithm.toUpperCase().replaceAll("_", " ") === "BEST FIRST"
     ? "Greedy Best-First"
@@ -186,6 +187,8 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
           <div className="mt-0.5">
             {state.candidatePlan.length > 0 ? (
               <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+            ) : isPlanningFailed ? (
+              <XCircle className="h-5 w-5 text-rose-400" />
             ) : (
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-400" />
             )}
@@ -201,16 +204,46 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                     ⚡ {state.searchTimeMs.toFixed(1)} ms
                   </span>
                 )}
-                {isFastest && (
+                {isFastest && !isPlanningFailed && (
                   <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
                     🏆 FASTEST MEASURED
                   </span>
                 )}
               </div>
-              <span className="font-mono text-[10px] text-slate-400">
-                {isPlanFound ? `${state.candidatePlan.length} Actions (Cost: ${state.candidateCost})` : "Searching..."}
+              <span className={`font-mono text-[10px] ${isPlanningFailed ? "font-bold text-rose-400" : "text-slate-400"}`}>
+                {isPlanFound
+                  ? `${state.candidatePlan.length} Actions (Cost: ${state.candidateCost})`
+                  : isPlanningFailed
+                  ? "NO VALID PATH FOUND"
+                  : "Searching..."}
               </span>
             </div>
+
+            {/* Error banner when planning search fails */}
+            {isPlanningFailed && (
+              <div className="mt-2.5 rounded-lg border border-rose-500/40 bg-rose-950/30 p-3 text-xs text-rose-200">
+                <div className="flex items-center gap-2 font-bold text-rose-300">
+                  <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                  <span>Planning Search Failed: No Valid Path Found</span>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-300 leading-relaxed">
+                  {state.planningFailedMessage || "All candidate search algorithms (A*, BFS, Greedy Best-First) exhausted all reachable states without finding a path to the goal. The requested goal cannot be reached under the active safety constraints."}
+                </p>
+                {state.searchBenchmark && state.searchBenchmark.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-rose-900/40">
+                    <span className="text-[10px] text-slate-400 font-mono">Algorithms Attempted:</span>
+                    {state.searchBenchmark.map((bench, idx) => (
+                      <span
+                        key={idx}
+                        className="rounded px-1.5 py-0.5 font-mono text-[10px] border border-rose-900/50 bg-rose-950/40 text-rose-300/80"
+                      >
+                        {bench.algorithm}: {bench.duration_ms.toFixed(1)} ms (0 paths)
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Explanation of best optimized search selected */}
             {state.candidatePlan.length > 0 && state.isFastestSearchMode && (
@@ -268,6 +301,8 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
               <CheckCircle2 className="h-5 w-5 text-emerald-400" />
             ) : state.initialVerificationPassed === false ? (
               <XCircle className="h-5 w-5 text-rose-400" />
+            ) : isPlanningFailed ? (
+              <XCircle className="h-5 w-5 text-slate-600" />
             ) : (
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-400" />
             )}
@@ -288,6 +323,8 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                     ? "text-emerald-400"
                     : state.initialVerificationPassed === false
                     ? "text-rose-400"
+                    : isPlanningFailed
+                    ? "text-slate-500"
                     : "text-slate-400"
                 }`}
               >
@@ -295,11 +332,15 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                   ? "VERIFIED SATISFIED"
                   : state.initialVerificationPassed === false
                   ? "VIOLATION DETECTED"
+                  : isPlanningFailed
+                  ? "SKIPPED (NO PLAN PRODUCED)"
                   : "Checking..."}
               </span>
             </div>
             <p className="mt-1 text-[11px] text-slate-400">
-              The verifier replays each action from the initial state and checks its preconditions, safety constraints, invariants, and final goals.
+              {isPlanningFailed
+                ? "Formal verification skipped because the search planners found no valid plan to reach the goal under the active constraints."
+                : "The verifier replays each action from the initial state and checks its preconditions, safety constraints, invariants, and final goals."}
             </p>
             {state.verificationFailureMessage && (
               <p className="mt-1 font-mono text-[11px] text-rose-300">
