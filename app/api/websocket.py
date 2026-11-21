@@ -218,26 +218,44 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
             if not build_res.is_success:
                 if build_res.status == "INVALID":
                     errors = build_res.validation_result.errors if build_res.validation_result else [build_res.error_message or "Unknown validation error"]
-                    if backtrack_idx < orchestrator.max_backtracks:
-                        last_validation_errors = errors
-                        trace.backtracks += 1
-                        trace.recovery_path.append(f"backtrack_validation_{backtrack_idx + 1}")
-                        await emit("VALIDATION_FAILED",
-                            f"Validation failed: {errors}. Backtracking to re-interpret...",
-                            {"errors": errors, "will_retry": True})
-                        continue  # ← BACKTRACK
-
-                    await emit("ERROR", f"Symbolic consistency validation failed after {trace.backtracks} retries: {errors}", {})
+                    fail_msg = f"Validation failed: {errors}"
+                    await emit("VALIDATION_FAILED", fail_msg, {
+                        "errors": errors,
+                        "will_retry": False,
+                    })
+                    await emit("ERROR", fail_msg, {
+                        "errors": errors,
+                        "status": "INVALID",
+                    })
+                    await emit("PIPELINE_FINISHED", "Pipeline execution stopped: Validation failed.", {
+                        "success": False,
+                        "plan_length": 0,
+                    })
                     return
 
                 if build_res.status == "INVARIANT_VIOLATION":
-                    await emit("INITIAL_STATE_INVARIANT_VIOLATION", f"Initial state violates invariants: {build_res.error_message}", {
+                    inv_msg = f"Domain invariant violation in initial state: {build_res.error_message}"
+                    await emit("INITIAL_STATE_INVARIANT_VIOLATION", inv_msg, {
                         "error": build_res.error_message,
+                        "will_retry": False,
+                    })
+                    await emit("ERROR", inv_msg, {
+                        "error": build_res.error_message,
+                        "status": "INVARIANT_VIOLATION",
+                    })
+                    await emit("PIPELINE_FINISHED", "Pipeline execution stopped: Initial state invariant violation.", {
+                        "success": False,
+                        "plan_length": 0,
                     })
                     return  # MANDATORY TERMINAL RETURN: NEVER proceed to graph enumeration or planner search!
 
-                await emit("ERROR", build_res.error_message or f"Problem building failed with status {build_res.status}", {
+                err_msg = build_res.error_message or f"Problem building failed with status {build_res.status}"
+                await emit("ERROR", err_msg, {
                     "status": build_res.status,
+                })
+                await emit("PIPELINE_FINISHED", f"Pipeline execution stopped: {build_res.status}", {
+                    "success": False,
+                    "plan_length": 0,
                 })
                 return
 
@@ -531,24 +549,18 @@ async def websocket_pipeline_endpoint(websocket: WebSocket):
                             "stage_duration_ms": round(t_repair_ms, 2),
                         })
                 else:
-                    # Repair failed — try backtrack
-                    if backtrack_idx < orchestrator.max_backtracks:
-                        last_validation_errors = [
-                            f"Repair loop failed ({replan_res.status}). "
-                            "Please re-check entity relationships."
-                        ]
-                        trace.backtracks += 1
-                        trace.recovery_path.append(f"backtrack_repair_{backtrack_idx + 1}")
-                        await emit("REPAIR_FAILED",
-                            f"Repair failed ({replan_res.status}). Backtracking to re-interpret...",
-                            {"will_retry": True})
-                        continue  # ← BACKTRACK
-
-                    final_plan = replan_res.repaired_plan or candidate
-                    final_verif = replan_res.final_verification or v_res
-                    await emit("REPAIR_INJECTED",
+                    # Repair failed — fail closed immediately without unguided backtracking
+                    await emit("REPAIR_FAILED",
                         f"CEGIS repair did not converge ({replan_res.status}) in {t_repair_ms:.1f} ms.",
-                        {"status": replan_res.status, "stage_duration_ms": round(t_repair_ms, 2)})
+                        {"status": replan_res.status, "will_retry": False, "stage_duration_ms": round(t_repair_ms, 2)})
+                    await emit("ERROR", f"Plan repair failed ({replan_res.status}): Unable to synthesize a verified plan.", {
+                        "status": replan_res.status,
+                    })
+                    await emit("PIPELINE_FINISHED", "Pipeline execution stopped: Repair failed.", {
+                        "success": False,
+                        "plan_length": 0,
+                    })
+                    return
 
             else:
                 await emit("VERIFICATION_RESULT",

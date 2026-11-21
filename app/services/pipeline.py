@@ -463,22 +463,14 @@ class PipelineOrchestrator:
                 ))
                 trace.validation_retries += 1
 
-                # If we can retry, feed errors back to interpretation
-                if backtrack_idx < self.max_backtracks:
-                    last_validation_errors = val_errors
-                    trace.backtracks += 1
-                    trace.recovery_path.append(f"backtrack_validation_errors_{backtrack_idx + 1}")
-                    logger.info(f"Validation failed, backtracking to re-interpret (attempt {backtrack_idx + 2})")
-                    continue  # ← BACKTRACK to Stage 1
-
-                # Exhausted backtracks — return validation failure
+                # Fail closed on validation failure immediately without unguided backtracking
                 elapsed = (time.perf_counter() - start_time) * 1000.0
                 trace.total_attempts = sum(1 for s in trace.stage_trace if s.stage == "INTERPRET")
                 trace.final_provider = provider_name
                 dummy_verif = VerificationResultSchema(
                     is_valid=False,
                     failed_step_index=0,
-                    explanation=f"Validation failed after {trace.backtracks} retries: {val_errors}",
+                    explanation=f"Validation failed: {val_errors}",
                 )
                 return PipelineExecutionResult(
                     task_id=proposal.task_id,
@@ -719,22 +711,33 @@ class PipelineOrchestrator:
                         recovery_action="backtrack" if backtrack_idx < self.max_backtracks else None,
                     ))
 
-                    # Repair failed — backtrack to re-interpretation
-                    if backtrack_idx < self.max_backtracks:
-                        last_validation_errors = [
-                            f"Plan repair failed ({replan_res.status}). "
-                            "The formalization may be incorrect. "
-                            "Please re-examine entity relationships and goal conditions."
-                        ]
-                        trace.backtracks += 1
-                        trace.recovery_path.append(f"backtrack_repair_failed_{backtrack_idx + 1}")
-                        logger.info(f"Repair failed, backtracking to re-interpret (attempt {backtrack_idx + 2})")
-                        continue  # ← BACKTRACK to Stage 1
-
-                    # Exhausted — return with partial results
-                    final_plan = replan_res.repaired_plan or candidate
-                    repairs = replan_res.repairs_applied
-                    final_verif = replan_res.final_verification or v_res
+                    # Repair failed — return failure without unguided backtracking
+                    elapsed = (time.perf_counter() - start_time) * 1000.0
+                    trace.total_attempts = sum(1 for s in trace.stage_trace if s.stage == "INTERPRET")
+                    trace.final_provider = best_provider_name
+                    trace.final_algorithm = used_algorithm
+                    dummy_verif = replan_res.final_verification or v_res or VerificationResultSchema(
+                        is_valid=False,
+                        failed_step_index=0,
+                        explanation=f"Plan repair did not converge: {replan_res.status}",
+                    )
+                    return PipelineExecutionResult(
+                        task_id=proposal.task_id,
+                        raw_prompt=prompt,
+                        status="REPAIR_FAILED",
+                        domain_id=routed_domain_id,
+                        interpretation=proposal,
+                        validation=val_res,
+                        symbolic_problem_name=problem.name,
+                        planner_algorithm=used_algorithm,
+                        candidate_plan=candidate,
+                        initial_verification=v_res,
+                        final_verification=dummy_verif,
+                        counterexample=replan_res.history[-1].get("counterexample") if replan_res.history else None,
+                        replanning_result=replan_res,
+                        total_execution_time_ms=elapsed,
+                        decision_trace=trace,
+                    )
 
             # ─── SUCCESS: Build final result ───────────────────────────
             elapsed = (time.perf_counter() - start_time) * 1000.0

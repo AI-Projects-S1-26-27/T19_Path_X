@@ -50,8 +50,9 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
   const cascades = state.cascadeCount || (state.decisionTrace?.planner_cascades ?? 0);
   const provider = providerLabel(state.providerUsed || state.decisionTrace?.final_provider || "Configured provider");
   const isFastest = Boolean(state.isFastestSearchMode || state.requestedAlgorithm?.includes("Fastest"));
+  const isValidationFailed = state.isSchemaValid === false;
   const isPlanFound = state.candidatePlan.length > 0;
-  const isPlanningFailed = Boolean(state.planningFailed || (!isStreaming && !isPlanFound && state.isSchemaValid));
+  const isPlanningFailed = Boolean(!isValidationFailed && (state.planningFailed || (!isStreaming && !isPlanFound && state.isSchemaValid)));
   const algorithm = state.plannerAlgorithm || state.requestedAlgorithm || state.decisionTrace?.final_algorithm || (isFastest ? "Fastest measured" : "Authoritative Search");
   const algorithmLabel = algorithm.toUpperCase().replaceAll("_", " ") === "BEST FIRST"
     ? "Greedy Best-First"
@@ -163,8 +164,8 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                   </span>
                 )}
               </div>
-              <span className="font-mono text-[10px] text-slate-400">
-                {provider}
+              <span className={`font-mono text-[10px] ${isValidationFailed ? "font-bold text-rose-400" : "text-slate-400"}`}>
+                {isValidationFailed ? "VALIDATION FAILED" : provider}
               </span>
             </div>
             {Object.keys(state.entities).length > 0 && (
@@ -179,6 +180,19 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                 ))}
               </div>
             )}
+
+            {/* Error banner when schema validation or invariant fails */}
+            {isValidationFailed && (
+              <div className="mt-2.5 rounded-lg border border-rose-500/40 bg-rose-950/30 p-3 text-xs text-rose-200">
+                <div className="flex items-center gap-2 font-bold text-rose-300">
+                  <AlertTriangle className="h-4 w-4 text-rose-400 shrink-0" />
+                  <span>Validation Failed: Initial State / Schema Invariant Violation</span>
+                </div>
+                <p className="mt-1 font-mono text-[11px] text-rose-300 leading-relaxed whitespace-pre-wrap">
+                  {state.validationErrorMessage || (state.validationErrors && state.validationErrors.length > 0 ? state.validationErrors.join("\n") : "Symbolic consistency or domain invariant validation failed for the proposed state.")}
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -187,6 +201,8 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
           <div className="mt-0.5">
             {state.candidatePlan.length > 0 ? (
               <CheckCircle2 className="h-5 w-5 text-emerald-400" />
+            ) : isValidationFailed ? (
+              <XCircle className="h-5 w-5 text-slate-600" />
             ) : isPlanningFailed ? (
               <XCircle className="h-5 w-5 text-rose-400" />
             ) : (
@@ -204,20 +220,28 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                     ⚡ {state.searchTimeMs.toFixed(1)} ms
                   </span>
                 )}
-                {isFastest && !isPlanningFailed && (
+                {isFastest && !isPlanningFailed && !isValidationFailed && (
                   <span className="rounded border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-300">
                     🏆 FASTEST MEASURED
                   </span>
                 )}
               </div>
-              <span className={`font-mono text-[10px] ${isPlanningFailed ? "font-bold text-rose-400" : "text-slate-400"}`}>
+              <span className={`font-mono text-[10px] ${isValidationFailed ? "text-slate-500 font-semibold" : isPlanningFailed ? "font-bold text-rose-400" : "text-slate-400"}`}>
                 {isPlanFound
                   ? `${state.candidatePlan.length} Actions (Cost: ${state.candidateCost})`
+                  : isValidationFailed
+                  ? "SKIPPED (VALIDATION FAILED)"
                   : isPlanningFailed
                   ? "NO VALID PATH FOUND"
                   : "Searching..."}
               </span>
             </div>
+
+            {isValidationFailed && (
+              <p className="mt-1 text-[11px] text-slate-400">
+                Candidate plan search skipped because formal problem schema validation failed.
+              </p>
+            )}
 
             {/* Error banner when planning search fails */}
             {isPlanningFailed && (
@@ -301,7 +325,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
               <CheckCircle2 className="h-5 w-5 text-emerald-400" />
             ) : state.initialVerificationPassed === false ? (
               <XCircle className="h-5 w-5 text-rose-400" />
-            ) : isPlanningFailed ? (
+            ) : isValidationFailed || isPlanningFailed ? (
               <XCircle className="h-5 w-5 text-slate-600" />
             ) : (
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-cyan-400" />
@@ -323,6 +347,8 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                     ? "text-emerald-400"
                     : state.initialVerificationPassed === false
                     ? "text-rose-400"
+                    : isValidationFailed
+                    ? "text-slate-500"
                     : isPlanningFailed
                     ? "text-slate-500"
                     : "text-slate-400"
@@ -332,13 +358,17 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
                   ? "VERIFIED SATISFIED"
                   : state.initialVerificationPassed === false
                   ? "VIOLATION DETECTED"
+                  : isValidationFailed
+                  ? "SKIPPED (VALIDATION FAILED)"
                   : isPlanningFailed
                   ? "SKIPPED (NO PLAN PRODUCED)"
                   : "Checking..."}
               </span>
             </div>
             <p className="mt-1 text-[11px] text-slate-400">
-              {isPlanningFailed
+              {isValidationFailed
+                ? "Formal verification skipped because no valid problem schema was produced."
+                : isPlanningFailed
                 ? "Formal verification skipped because the search planners found no valid plan to reach the goal under the active constraints."
                 : "The verifier replays each action from the initial state and checks its preconditions, safety constraints, invariants, and final goals."}
             </p>
@@ -361,7 +391,7 @@ export function ExecutionStepper({ state, isStreaming }: ExecutionStepperProps) 
         )}
 
         {/* Step 7: Final Verified Plan */}
-        {state.isFinalVerified && (
+        {state.isFinalVerified && !isValidationFailed && (
           <div className="flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-4">
             <div className="flex items-center gap-3">
               <ShieldCheck className="h-6 w-6 text-emerald-400" />

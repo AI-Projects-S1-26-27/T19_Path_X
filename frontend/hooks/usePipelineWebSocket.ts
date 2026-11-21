@@ -25,6 +25,8 @@ export interface PipelineAccumulatedState {
   goalFacts: any[];
   negativeConstraints: any[];
   isSchemaValid: boolean | null;
+  validationErrors?: string[];
+  validationErrorMessage?: string;
   candidatePlan: GroundActionSchema[];
   candidateCost: number;
   initialVerificationPassed: boolean | null;
@@ -64,6 +66,8 @@ const initialState: PipelineAccumulatedState = {
   goalFacts: [],
   negativeConstraints: [],
   isSchemaValid: null,
+  validationErrors: undefined,
+  validationErrorMessage: undefined,
   candidatePlan: [],
   candidateCost: 0,
   initialVerificationPassed: null,
@@ -310,15 +314,38 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
                 terminalEventRef.current = true;
                 setIsStreaming(false);
               }
-            } else if (data.stage === "VALIDATION_FAILED") {
+            } else if (data.stage === "INITIAL_STATE_INVARIANT_VIOLATION") {
+              const errStr = data.data?.error || data.message;
               setState((prev) => ({
                 ...prev,
                 isSchemaValid: false,
+                validationErrorMessage: data.message,
+                validationErrors: [errStr],
+                treeLog: [
+                  ...(prev.treeLog || []),
+                  { stage: "INVARIANT_VIOLATION", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
+                ],
+              }));
+              if (data.data?.will_retry === false) {
+                terminalEventRef.current = true;
+                setIsStreaming(false);
+              }
+            } else if (data.stage === "VALIDATION_FAILED") {
+              const errList = Array.isArray(data.data?.errors) ? data.data.errors : [data.message];
+              setState((prev) => ({
+                ...prev,
+                isSchemaValid: false,
+                validationErrorMessage: data.message,
+                validationErrors: errList,
                 treeLog: [
                   ...(prev.treeLog || []),
                   { stage: "VALIDATION_FAILED", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
                 ],
               }));
+              if (data.data?.will_retry === false) {
+                terminalEventRef.current = true;
+                setIsStreaming(false);
+              }
             } else if (data.stage === "INTERPRETATION_COMPLETED") {
               setState((prev) => ({
                 ...prev,
@@ -384,17 +411,23 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
             } else if (data.stage === "PIPELINE_FINISHED" || data.stage === "ERROR") {
               if (data.stage === "ERROR") {
                 setError(data.message || "Pipeline execution error occurred.");
-                setState((prev) => ({
-                  ...prev,
-                  planningFailed: prev.candidatePlan.length === 0 ? true : prev.planningFailed,
-                  planningFailedMessage: prev.candidatePlan.length === 0
-                    ? (data.message || "No valid path found to reach the goal under active constraints.")
-                    : prev.planningFailedMessage,
-                  treeLog: [
-                    ...(prev.treeLog || []),
-                    { stage: "ERROR", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
-                  ],
-                }));
+                setState((prev) => {
+                  const isValFail = prev.isSchemaValid === false;
+                  return {
+                    ...prev,
+                    validationErrorMessage: isValFail
+                      ? (prev.validationErrorMessage || data.message)
+                      : prev.validationErrorMessage,
+                    planningFailed: !isValFail && prev.candidatePlan.length === 0 ? true : prev.planningFailed,
+                    planningFailedMessage: !isValFail && prev.candidatePlan.length === 0
+                      ? (data.message || "No valid path found to reach the goal under active constraints.")
+                      : prev.planningFailedMessage,
+                    treeLog: [
+                      ...(prev.treeLog || []),
+                      { stage: "ERROR", message: data.message, timestamp: data.timestamp || Date.now(), type: "warning" },
+                    ],
+                  };
+                });
               }
               terminalEventRef.current = true;
               setIsStreaming(false);
@@ -428,13 +461,17 @@ export function usePipelineWebSocket(backendUrl: string = "http://127.0.0.1:8080
             if (!resp.ok) throw new Error(await resp.text());
             const json = await resp.json();
 
+            const isVal = json.validation?.is_valid ?? (json.status !== "INVALID_PROPOSAL" && json.status !== "INVARIANT_VIOLATION");
+            const valErrs = json.validation?.errors || (json.status === "INVALID_PROPOSAL" ? [json.initial_verification?.explanation || "Validation failed"] : undefined);
             setState({
               prompt: req.prompt,
               entities: json.interpretation?.entities || {},
               initialFacts: json.interpretation?.initial_facts || [],
               goalFacts: json.interpretation?.goal_facts || [],
               negativeConstraints: json.interpretation?.negative_constraints || [],
-              isSchemaValid: json.validation?.is_valid ?? true,
+              isSchemaValid: isVal,
+              validationErrors: valErrs,
+              validationErrorMessage: valErrs ? valErrs.join("; ") : undefined,
               candidatePlan: json.candidate_plan?.actions || [],
               candidateCost: json.candidate_plan?.total_cost || 0,
               initialVerificationPassed: json.initial_verification?.is_valid,
